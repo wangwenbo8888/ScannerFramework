@@ -1,0 +1,3 @@
+E:/workfold/framework/build/_deps/spdlog-subbuild/CMakeFiles/spdlog-populate.dir
+E:/workfold/framework/build/_deps/spdlog-subbuild/CMakeFiles/ALL_BUILD.dir
+E:/workfold/framework/build/_deps/spdlog-subbuild/CMakeFiles/ZERO_CHECK.dir

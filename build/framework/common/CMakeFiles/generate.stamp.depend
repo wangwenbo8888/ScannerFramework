@@ -1,0 +1,6 @@
+# CMake generation dependency list for this directory.
+C:/Program Files/CMake/share/cmake-3.31/Modules/FindPackageHandleStandardArgs.cmake
+C:/Program Files/CMake/share/cmake-3.31/Modules/FindPackageMessage.cmake
+E:/workfold/framework/framework/common/CMakeLists.txt
+F:/opencv4.13/install/x64/vc17/lib/OpenCVConfig-version.cmake
+F:/opencv4.13/install/x64/vc17/lib/OpenCVConfig.cmake

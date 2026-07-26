@@ -1,0 +1,2 @@
+add_library(fw_crosscut INTERFACE)
+target_link_libraries(fw_crosscut INTERFACE fw_common)

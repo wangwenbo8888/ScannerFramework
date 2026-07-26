@@ -1,0 +1,152 @@
+^E:\WORKFOLD\FRAMEWORK\BUILD\_DEPS\SPDLOG-SUBBUILD\CMAKEFILES\1568D2D5B4F08DEEAE73E9C1AC98CF35\SPDLOG-POPULATE-MKDIR.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -Dcfgdir=/Debug -P E:/workfold/framework/build/_deps/spdlog-subbuild/spdlog-populate-prefix/tmp/spdlog-populate-mkdirs.cmake
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E touch E:/workfold/framework/build/_deps/spdlog-subbuild/spdlog-populate-prefix/src/spdlog-populate-stamp/Debug/spdlog-populate-mkdir
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^E:\WORKFOLD\FRAMEWORK\BUILD\_DEPS\SPDLOG-SUBBUILD\CMAKEFILES\1568D2D5B4F08DEEAE73E9C1AC98CF35\SPDLOG-POPULATE-DOWNLOAD.RULE
+setlocal
+cd E:\workfold\framework\build\_deps
+if %errorlevel% neq 0 goto :cmEnd
+E:
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -DCMAKE_MESSAGE_LOG_LEVEL=VERBOSE -P E:/workfold/framework/build/_deps/spdlog-subbuild/spdlog-populate-prefix/src/spdlog-populate-stamp/download-spdlog-populate.cmake
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -DCMAKE_MESSAGE_LOG_LEVEL=VERBOSE -P E:/workfold/framework/build/_deps/spdlog-subbuild/spdlog-populate-prefix/src/spdlog-populate-stamp/verify-spdlog-populate.cmake
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -DCMAKE_MESSAGE_LOG_LEVEL=VERBOSE -P E:/workfold/framework/build/_deps/spdlog-subbuild/spdlog-populate-prefix/src/spdlog-populate-stamp/extract-spdlog-populate.cmake
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E touch E:/workfold/framework/build/_deps/spdlog-subbuild/spdlog-populate-prefix/src/spdlog-populate-stamp/Debug/spdlog-populate-download
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^E:\WORKFOLD\FRAMEWORK\BUILD\_DEPS\SPDLOG-SUBBUILD\CMAKEFILES\1568D2D5B4F08DEEAE73E9C1AC98CF35\SPDLOG-POPULATE-UPDATE.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -E echo_append
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E touch E:/workfold/framework/build/_deps/spdlog-subbuild/spdlog-populate-prefix/src/spdlog-populate-stamp/Debug/spdlog-populate-update
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^E:\WORKFOLD\FRAMEWORK\BUILD\_DEPS\SPDLOG-SUBBUILD\CMAKEFILES\1568D2D5B4F08DEEAE73E9C1AC98CF35\SPDLOG-POPULATE-PATCH.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -E echo_append
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E touch E:/workfold/framework/build/_deps/spdlog-subbuild/spdlog-populate-prefix/src/spdlog-populate-stamp/Debug/spdlog-populate-patch
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^E:\WORKFOLD\FRAMEWORK\BUILD\_DEPS\SPDLOG-SUBBUILD\CMAKEFILES\1568D2D5B4F08DEEAE73E9C1AC98CF35\SPDLOG-POPULATE-CONFIGURE.RULE
+setlocal
+cd E:\workfold\framework\build\_deps\spdlog-build
+if %errorlevel% neq 0 goto :cmEnd
+E:
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E echo_append
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E touch E:/workfold/framework/build/_deps/spdlog-subbuild/spdlog-populate-prefix/src/spdlog-populate-stamp/Debug/spdlog-populate-configure
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^E:\WORKFOLD\FRAMEWORK\BUILD\_DEPS\SPDLOG-SUBBUILD\CMAKEFILES\1568D2D5B4F08DEEAE73E9C1AC98CF35\SPDLOG-POPULATE-BUILD.RULE
+setlocal
+cd E:\workfold\framework\build\_deps\spdlog-build
+if %errorlevel% neq 0 goto :cmEnd
+E:
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E echo_append
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E touch E:/workfold/framework/build/_deps/spdlog-subbuild/spdlog-populate-prefix/src/spdlog-populate-stamp/Debug/spdlog-populate-build
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^E:\WORKFOLD\FRAMEWORK\BUILD\_DEPS\SPDLOG-SUBBUILD\CMAKEFILES\1568D2D5B4F08DEEAE73E9C1AC98CF35\SPDLOG-POPULATE-INSTALL.RULE
+setlocal
+cd E:\workfold\framework\build\_deps\spdlog-build
+if %errorlevel% neq 0 goto :cmEnd
+E:
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E echo_append
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E touch E:/workfold/framework/build/_deps/spdlog-subbuild/spdlog-populate-prefix/src/spdlog-populate-stamp/Debug/spdlog-populate-install
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^E:\WORKFOLD\FRAMEWORK\BUILD\_DEPS\SPDLOG-SUBBUILD\CMAKEFILES\1568D2D5B4F08DEEAE73E9C1AC98CF35\SPDLOG-POPULATE-TEST.RULE
+setlocal
+cd E:\workfold\framework\build\_deps\spdlog-build
+if %errorlevel% neq 0 goto :cmEnd
+E:
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E echo_append
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E touch E:/workfold/framework/build/_deps/spdlog-subbuild/spdlog-populate-prefix/src/spdlog-populate-stamp/Debug/spdlog-populate-test
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^E:\WORKFOLD\FRAMEWORK\BUILD\_DEPS\SPDLOG-SUBBUILD\CMAKEFILES\C1620F33D2AA9E7C4F052CF41932F0D4\SPDLOG-POPULATE-COMPLETE.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -E make_directory E:/workfold/framework/build/_deps/spdlog-subbuild/CMakeFiles/Debug
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E touch E:/workfold/framework/build/_deps/spdlog-subbuild/CMakeFiles/Debug/spdlog-populate-complete
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E touch E:/workfold/framework/build/_deps/spdlog-subbuild/spdlog-populate-prefix/src/spdlog-populate-stamp/Debug/spdlog-populate-done
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^E:\WORKFOLD\FRAMEWORK\BUILD\_DEPS\SPDLOG-SUBBUILD\CMAKEFILES\3B32D43378F87990CEB5499566BA326D\SPDLOG-POPULATE.RULE
+setlocal
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^E:\WORKFOLD\FRAMEWORK\BUILD\_DEPS\SPDLOG-SUBBUILD\CMAKELISTS.TXT
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SE:/workfold/framework/build/_deps/spdlog-subbuild -BE:/workfold/framework/build/_deps/spdlog-subbuild --check-stamp-file E:/workfold/framework/build/_deps/spdlog-subbuild/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

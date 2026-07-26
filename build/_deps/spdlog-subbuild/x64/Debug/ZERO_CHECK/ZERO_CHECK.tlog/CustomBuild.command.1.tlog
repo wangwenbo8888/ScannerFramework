@@ -1,0 +1,10 @@
+^E:\WORKFOLD\FRAMEWORK\BUILD\_DEPS\SPDLOG-SUBBUILD\CMAKEFILES\3B32D43378F87990CEB5499566BA326D\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SE:/workfold/framework/build/_deps/spdlog-subbuild -BE:/workfold/framework/build/_deps/spdlog-subbuild --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file E:/workfold/framework/build/_deps/spdlog-subbuild/spdlog-populate.sln
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

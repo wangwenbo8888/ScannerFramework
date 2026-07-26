@@ -1,0 +1,39 @@
+# CMake generation dependency list for this directory.
+C:/Program Files/CMake/share/cmake-3.31/Modules/CMakeCXXInformation.cmake
+C:/Program Files/CMake/share/cmake-3.31/Modules/CMakeCommonLanguageInclude.cmake
+C:/Program Files/CMake/share/cmake-3.31/Modules/CMakeGenericSystem.cmake
+C:/Program Files/CMake/share/cmake-3.31/Modules/CMakeInitializeConfigs.cmake
+C:/Program Files/CMake/share/cmake-3.31/Modules/CMakeLanguageInformation.cmake
+C:/Program Files/CMake/share/cmake-3.31/Modules/CMakeRCInformation.cmake
+C:/Program Files/CMake/share/cmake-3.31/Modules/CMakeSystemSpecificInformation.cmake
+C:/Program Files/CMake/share/cmake-3.31/Modules/CMakeSystemSpecificInitialize.cmake
+C:/Program Files/CMake/share/cmake-3.31/Modules/Compiler/CMakeCommonCompilerMacros.cmake
+C:/Program Files/CMake/share/cmake-3.31/Modules/Compiler/MSVC-CXX.cmake
+C:/Program Files/CMake/share/cmake-3.31/Modules/Compiler/MSVC.cmake
+C:/Program Files/CMake/share/cmake-3.31/Modules/ExternalProject/shared_internal_commands.cmake
+C:/Program Files/CMake/share/cmake-3.31/Modules/FetchContent.cmake
+C:/Program Files/CMake/share/cmake-3.31/Modules/FetchContent/CMakeLists.cmake.in
+C:/Program Files/CMake/share/cmake-3.31/Modules/FindCUDA.cmake
+C:/Program Files/CMake/share/cmake-3.31/Modules/FindCUDA/select_compute_arch.cmake
+C:/Program Files/CMake/share/cmake-3.31/Modules/FindPackageHandleStandardArgs.cmake
+C:/Program Files/CMake/share/cmake-3.31/Modules/FindPackageMessage.cmake
+C:/Program Files/CMake/share/cmake-3.31/Modules/Internal/CMakeCXXLinkerInformation.cmake
+C:/Program Files/CMake/share/cmake-3.31/Modules/Internal/CMakeCommonLinkerInformation.cmake
+C:/Program Files/CMake/share/cmake-3.31/Modules/Platform/Linker/Windows-MSVC-CXX.cmake
+C:/Program Files/CMake/share/cmake-3.31/Modules/Platform/Linker/Windows-MSVC.cmake
+C:/Program Files/CMake/share/cmake-3.31/Modules/Platform/Windows-Initialize.cmake
+C:/Program Files/CMake/share/cmake-3.31/Modules/Platform/Windows-MSVC-CXX.cmake
+C:/Program Files/CMake/share/cmake-3.31/Modules/Platform/Windows-MSVC.cmake
+C:/Program Files/CMake/share/cmake-3.31/Modules/Platform/Windows.cmake
+C:/Program Files/CMake/share/cmake-3.31/Modules/Platform/WindowsPaths.cmake
+E:/workfold/framework/CMakeLists.txt
+E:/workfold/framework/build/CMakeFiles/3.31.7/CMakeCXXCompiler.cmake
+E:/workfold/framework/build/CMakeFiles/3.31.7/CMakeRCCompiler.cmake
+E:/workfold/framework/build/CMakeFiles/3.31.7/CMakeSystem.cmake
+E:/workfold/framework/cmake/CompilerSettings.cmake
+E:/workfold/framework/cmake/Version.h.in
+F:/opencv4.13/install/x64/vc17/lib/OpenCVConfig-version.cmake
+F:/opencv4.13/install/x64/vc17/lib/OpenCVConfig.cmake
+F:/opencv4.13/install/x64/vc17/lib/OpenCVModules-debug.cmake
+F:/opencv4.13/install/x64/vc17/lib/OpenCVModules-release.cmake
+F:/opencv4.13/install/x64/vc17/lib/OpenCVModules.cmake
