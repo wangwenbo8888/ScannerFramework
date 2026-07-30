@@ -1,0 +1,303 @@
+#include "ScannerWindow.h"
+
+#include <opencv2/imgproc.hpp>
+#include <spdlog/spdlog.h>
+
+// ============================================================================
+// Mat → QImage 转换
+// ============================================================================
+static QImage matToQImage(cv::Mat& mat)
+{
+    if (mat.type() == CV_8UC1) {
+        QImage img(mat.cols, mat.rows, QImage::Format_Indexed8);
+        img.setColorCount(256);
+        for (int i = 0; i < 256; i++)
+            img.setColor(i, qRgb(i, i, i));
+        uchar* pSrc = mat.data;
+        for (int row = 0; row < mat.rows; row++) {
+            uchar* pDest = img.scanLine(row);
+            memcpy(pDest, pSrc, mat.cols);
+            pSrc += mat.step;
+        }
+        return img;
+    } else if (mat.type() == CV_8UC3) {
+        QImage img(mat.data, mat.cols, mat.rows, mat.step, QImage::Format_RGB888);
+        return img.rgbSwapped();
+    }
+    return QImage();
+}
+
+// ============================================================================
+// 构造 / 析构
+// ============================================================================
+ScannerWindow::ScannerWindow(QWidget *parent)
+    : QMainWindow(parent)
+{
+    ui.setupUi(this);
+
+    // 创建 CameraControl
+    Scanner::device::StereoPairConfig cfg;
+    cfg.deviceIndexLeft = 0;
+    cfg.deviceIndexRight = 1;
+    cfg.rotateRight180 = true;
+    cfg.defaultExposureMs = ui.horizontalSlider_ExposeTime->value();
+    m_cam = new Scanner::device::CameraControl(cfg);
+
+    // 连接按钮
+    connect(ui.pushButton_OpenScannerCamera, &QPushButton::clicked, this, &ScannerWindow::onOpenScannerCamera);
+    connect(ui.pushButton_CloseScannerCamera, &QPushButton::clicked, this, &ScannerWindow::onCloseScannerCamera);
+    connect(ui.pushButton_Start_Scanner, &QPushButton::clicked, this, &ScannerWindow::onStartScanner);
+    connect(ui.pushButton_Stop_Scanner, &QPushButton::clicked, this, &ScannerWindow::onStopScanner);
+
+    // 连接滑块
+    connect(ui.horizontalSlider_Freq, &QSlider::valueChanged, this, &ScannerWindow::onSliderFreqChanged);
+    connect(ui.horizontalSlider_Background_Lighting, &QSlider::valueChanged, this, &ScannerWindow::onSliderBackgroundChanged);
+    connect(ui.horizontalSlider_Laser_Lighting, &QSlider::valueChanged, this, &ScannerWindow::onSliderLaserChanged);
+    connect(ui.horizontalSlider_ExposeTime, &QSlider::valueChanged, this, &ScannerWindow::onSliderExposeChanged);
+
+    // FPS 定时器
+    m_fpsTimer = new QTimer(this);
+    connect(m_fpsTimer, &QTimer::timeout, this, &ScannerWindow::onTimeout);
+    m_fpsTimer->start(1000);
+
+    // 图像更新信号
+    connect(this, &ScannerWindow::updateImages, this, [this](QImage left, QImage right) {
+        ui.label_LeftImage->setPixmap(QPixmap::fromImage(left).scaled(
+            ui.label_LeftImage->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        ui.label_RightImage->setPixmap(QPixmap::fromImage(right).scaled(
+            ui.label_RightImage->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    });
+
+    // 打开串口
+    openPorts();
+
+    ui.textEdit_Info->append("ScannerWindow 已就绪");
+}
+
+ScannerWindow::~ScannerWindow()
+{
+    if (m_cam) {
+        m_cam->stopAsyncCapture();
+        m_cam->close();
+    }
+    if (m_serialPort1 && m_serialPort1->isOpen()) m_serialPort1->close();
+    if (m_serialPort2 && m_serialPort2->isOpen()) m_serialPort2->close();
+    delete m_serialPort1;
+    delete m_serialPort2;
+}
+
+// ============================================================================
+// 串口
+// ============================================================================
+void ScannerWindow::openPorts()
+{
+    // 枚举可用串口
+    foreach (const QSerialPortInfo& info, QSerialPortInfo::availablePorts()) {
+        m_portNameList << info.portName();
+        ui.textEdit_Info->append(QString("发现串口: %1").arg(info.portName()));
+    }
+
+    if (m_portNameList.empty()) {
+        ui.textEdit_Info->append("未发现串口");
+        return;
+    }
+
+    // 打开串口1
+    m_serialPort1 = new QSerialPort(this);
+    m_serialPort1->setPortName(m_portNameList[0]);
+    if (m_serialPort1->open(QIODevice::ReadWrite)) {
+        m_serialPort1->setBaudRate(QSerialPort::Baud115200, QSerialPort::AllDirections);
+        m_serialPort1->setDataBits(QSerialPort::Data8);
+        m_serialPort1->setFlowControl(QSerialPort::NoFlowControl);
+        m_serialPort1->setParity(QSerialPort::NoParity);
+        m_serialPort1->setStopBits(QSerialPort::OneStop);
+        connect(m_serialPort1, &QSerialPort::readyRead, this, [this]() {
+            QByteArray data = m_serialPort1->readAll();
+            ui.textEdit_Info->append(QString("串口1 收到: %1").arg(QString(data)));
+        });
+        ui.textEdit_Info->append(QString("串口1 已打开: %1").arg(m_portNameList[0]));
+    } else {
+        ui.textEdit_Info->append(QString("串口1 打开失败: %1").arg(m_serialPort1->errorString()));
+    }
+
+    // 打开串口2（如果有）
+    if (m_portNameList.size() >= 2) {
+        m_serialPort2 = new QSerialPort(this);
+        m_serialPort2->setPortName(m_portNameList[1]);
+        if (m_serialPort2->open(QIODevice::ReadWrite)) {
+            m_serialPort2->setBaudRate(QSerialPort::Baud115200, QSerialPort::AllDirections);
+            m_serialPort2->setDataBits(QSerialPort::Data8);
+            m_serialPort2->setFlowControl(QSerialPort::NoFlowControl);
+            m_serialPort2->setParity(QSerialPort::NoParity);
+            m_serialPort2->setStopBits(QSerialPort::OneStop);
+            connect(m_serialPort2, &QSerialPort::readyRead, this, [this]() {
+                QByteArray data = m_serialPort2->readAll();
+                ui.textEdit_Info->append(QString("串口2 收到: %1").arg(QString(data)));
+            });
+            ui.textEdit_Info->append(QString("串口2 已打开: %1").arg(m_portNameList[1]));
+        } else {
+            ui.textEdit_Info->append(QString("串口2 打开失败: %1").arg(m_serialPort2->errorString()));
+        }
+    }
+}
+
+void ScannerWindow::sendData(QSerialPort* port, const QString& data)
+{
+    if (!port || !port->isOpen()) {
+        ui.textEdit_Info->append("串口未打开，无法发送");
+        return;
+    }
+    QByteArray bytes = data.toUtf8();
+    qint64 written = port->write(bytes);
+    if (written == -1) {
+        ui.textEdit_Info->append(QString("发送失败: %1").arg(port->errorString()));
+    } else {
+        ui.textEdit_Info->append(QString("发送 %1 字节: %2").arg(written).arg(data));
+    }
+}
+
+QString ScannerWindow::buildStartCommand()
+{
+    // 协议: N10 [timestamp] [interval] H{freq} B{background} T1 V2 L{laser};
+    int freq = ui.horizontalSlider_Freq->value();
+    int bg = ui.horizontalSlider_Background_Lighting->value();
+    int laser = ui.horizontalSlider_Laser_Lighting->value();
+
+    QString cmd("N10 ");
+
+    if (ui.checkBox_SetTimeStamp->isChecked()) {
+        // 获取当前时间戳（微秒级）
+        auto now = std::chrono::system_clock::now().time_since_epoch();
+        auto us = std::chrono::duration_cast<std::chrono::microseconds>(now).count();
+        cmd.append(QString::number(us));
+        cmd.append(" ");
+        cmd.append(QString::number(ui.spinBox_Scanner->value()));
+        cmd.append(" ");
+    }
+
+    cmd.append("H").append(QString::number(freq));
+    cmd.append(" B").append(QString::number(bg));
+    cmd.append(" T1");
+    cmd.append(" V2");
+    cmd.append(" L").append(QString::number(laser));
+    cmd.append(";");
+
+    return cmd;
+}
+
+QString ScannerWindow::buildStopCommand()
+{
+    return "N11 H0;";
+}
+
+// ============================================================================
+// 相机操作
+// ============================================================================
+void ScannerWindow::onOpenScannerCamera()
+{
+    if (!m_cam) return;
+    auto r = m_cam->open();
+    ui.textEdit_Info->append(r.success ? "扫描仪相机已打开" :
+        QString("打开失败: %1").arg(QString::fromStdString(r.message)));
+}
+
+void ScannerWindow::onCloseScannerCamera()
+{
+    if (!m_cam) return;
+    m_cam->stopAsyncCapture();
+    auto r = m_cam->close();
+    ui.textEdit_Info->append(r.success ? "扫描仪相机已关闭" :
+        QString("关闭失败: %1").arg(QString::fromStdString(r.message)));
+}
+
+void ScannerWindow::onStartScanner()
+{
+    if (!m_cam || !m_cam->isOpen()) {
+        ui.textEdit_Info->append("请先打开相机");
+        return;
+    }
+
+    int expose = ui.horizontalSlider_ExposeTime->value();
+    m_cam->setExposure(expose);
+
+    // 先发送串口命令给下位机
+    QString startCmd = buildStartCommand();
+    ui.textEdit_Info->append(QString("发送下位机命令: %1").arg(startCmd));
+    sendData(m_serialPort1, startCmd);
+    sendData(m_serialPort2, startCmd);
+
+    // 再启动相机采集
+    auto r = m_cam->startAsyncCapture([this](const Scanner::hal::StereoFrame& frame) {
+        QMetaObject::invokeMethod(this, [this, frame]() {
+            if (frame.leftGray.empty() || frame.rightGray.empty()) return;
+
+            cv::Mat leftReduced, rightReduced;
+            cv::resize(frame.leftGray, leftReduced, cv::Size(), 0.25, 0.25, cv::INTER_AREA);
+            cv::resize(frame.rightGray, rightReduced, cv::Size(), 0.25, 0.25, cv::INTER_AREA);
+
+            QImage leftImg = matToQImage(leftReduced);
+            QImage rightImg = matToQImage(rightReduced);
+            emit updateImages(leftImg, rightImg);
+
+            ++m_frameCount;
+        });
+    });
+
+    ui.textEdit_Info->append(r.success ?
+        QString("采集已启动 (曝光 %1 ms)").arg(expose) :
+        QString("启动失败: %1").arg(QString::fromStdString(r.message)));
+}
+
+void ScannerWindow::onStopScanner()
+{
+    if (!m_cam) return;
+
+    // 先发送停止命令给下位机
+    QString stopCmd = buildStopCommand();
+    ui.textEdit_Info->append(QString("发送下位机命令: %1").arg(stopCmd));
+    sendData(m_serialPort1, stopCmd);
+    sendData(m_serialPort2, stopCmd);
+
+    // 再停止相机采集
+    auto r = m_cam->stopAsyncCapture();
+    ui.textEdit_Info->append(r.success ? "采集已停止" :
+        QString("停止失败: %1").arg(QString::fromStdString(r.message)));
+}
+
+// ============================================================================
+// 滑块
+// ============================================================================
+void ScannerWindow::onSliderFreqChanged(int v)
+{
+    ui.label_Freq_Value->setText(QString::number(v));
+}
+
+void ScannerWindow::onSliderBackgroundChanged(int v)
+{
+    ui.label_Background_Value->setText(QString::number(v));
+}
+
+void ScannerWindow::onSliderLaserChanged(int v)
+{
+    ui.label_Laser_Lighting_Value->setText(QString::number(v));
+}
+
+void ScannerWindow::onSliderExposeChanged(int v)
+{
+    ui.label_ExposeTime_Value->setText(QString::number(v));
+    if (m_cam && m_cam->isOpen()) {
+        m_cam->setExposure(v);
+    }
+}
+
+// ============================================================================
+// FPS 定时器
+// ============================================================================
+void ScannerWindow::onTimeout()
+{
+    uint64_t fps = m_frameCount - m_prevFrameCount;
+    m_prevFrameCount = m_frameCount;
+    m_currentFps = fps;
+    ui.label_FrameRate_Value_Left->setText(QString::number(fps));
+    ui.label_FrameRate_Value_Right->setText(QString::number(fps));
+}

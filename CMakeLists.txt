@@ -64,6 +64,48 @@ if(ENABLE_CUDA)
 endif()
 
 # ============================================================================
+# Qt5
+# ============================================================================
+set(CMAKE_PREFIX_PATH "C:/Qt/Qt5.15.2/5.15.2/msvc2019_64" ${CMAKE_PREFIX_PATH})
+find_package(Qt5 REQUIRED COMPONENTS Widgets OpenGL Svg SerialPort)
+
+# ============================================================================
+# OpenSceneGraph
+# ============================================================================
+set(OSG_ROOT "F:/osg3.6.5/install" CACHE PATH "OSG root")
+find_path(OSG_INCLUDE_DIR osg/Group PATHS "${OSG_ROOT}/include")
+find_library(OSG_LIBRARY osg PATHS "${OSG_ROOT}/lib")
+find_library(OSGDB_LIBRARY osgDB PATHS "${OSG_ROOT}/lib")
+find_library(OSGGA_LIBRARY osgGA PATHS "${OSG_ROOT}/lib")
+find_library(OSGUTIL_LIBRARY osgUtil PATHS "${OSG_ROOT}/lib")
+find_library(OSGVIEWER_LIBRARY osgViewer PATHS "${OSG_ROOT}/lib")
+find_library(OSGTEXT_LIBRARY osgText PATHS "${OSG_ROOT}/lib")
+find_library(OPENTHREADS_LIBRARY OpenThreads PATHS "${OSG_ROOT}/lib")
+
+if(NOT OSG_LIBRARY)
+    message(FATAL_ERROR "OpenSceneGraph not found at ${OSG_ROOT}")
+endif()
+
+add_library(OSG::osg IMPORTED INTERFACE)
+set_target_properties(OSG::osg PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${OSG_INCLUDE_DIR}"
+    INTERFACE_LINK_LIBRARIES "${OSG_LIBRARY};${OSGDB_LIBRARY};${OSGGA_LIBRARY};${OSGUTIL_LIBRARY};${OSGVIEWER_LIBRARY};${OSGTEXT_LIBRARY};${OPENTHREADS_LIBRARY}"
+)
+
+# ============================================================================
+# Eigen
+# ============================================================================
+set(EIGEN_ROOT "F:/eigen-3.4.1" CACHE PATH "Eigen root")
+find_path(EIGEN_INCLUDE_DIR Eigen/Dense PATHS "${EIGEN_ROOT}")
+if(NOT EIGEN_INCLUDE_DIR)
+    message(FATAL_ERROR "Eigen not found at ${EIGEN_ROOT}")
+endif()
+add_library(Eigen::Eigen IMPORTED INTERFACE)
+set_target_properties(Eigen::Eigen PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${EIGEN_INCLUDE_DIR}"
+)
+
+# ============================================================================
 # 版本头
 # ============================================================================
 configure_file(

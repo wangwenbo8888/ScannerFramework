@@ -34,3 +34,8 @@ compile_commands.json
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Temp output
+smoke_out.txt
+smoke_err.txt
+2.png
