@@ -370,9 +370,9 @@ osg::Group* buildCalibScene(const std::string& stlPath)
     }
     root->addChild(boardGroup);
 
-    // 扫描仪组：缩放 0.6 + 绕 Z 顺时针 90° + Y-220 平移（绿=目标 红=当前，STL 原始坐标）
+    // 扫描仪组：缩放 0.6 + 绕 Z 顺时针 90° + 向左偏移(-Y) + 下方(-Y)
     auto* scanGroup = new osg::MatrixTransform;
-    scanGroup->setMatrix(osg::Matrix::translate(0.0f, -220.0f, 0.0f) *
+    scanGroup->setMatrix(osg::Matrix::translate(0.0f, -420.0f, 0.0f) *
                          osg::Matrix::rotate(osg::DegreesToRadians(-90.0f), osg::Vec3(0, 0, 1)) *
                          osg::Matrix::scale(0.6f, 0.6f, 0.6f));
     {
