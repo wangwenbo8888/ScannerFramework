@@ -359,27 +359,13 @@ osg::Group* buildCalibScene(const std::string& stlPath)
 {
     osg::ref_ptr<osg::Group> root = new osg::Group;
 
-    // 标定板组：放大 2.2 + 绕 Z 顺时针 90° + Y+40 平移
-    auto* boardGroup = new osg::MatrixTransform;
-    boardGroup->setMatrix(osg::Matrix::translate(0.0f, 40.0f, 0.0f) *
-                          osg::Matrix::rotate(osg::DegreesToRadians(-90.0f), osg::Vec3(0, 0, 1)) *
-                          osg::Matrix::scale(3.3f, 3.3f, 3.3f));
-    {
-        auto* boardGeode = new osg::Geode;
-        boardGeode->addDrawable(createBoardPlane());
-        boardGeode->addDrawable(createGridLines());
-        boardGroup->addChild(boardGeode);
-        boardGroup->addChild(createMarkers());
-    }
-    root->addChild(boardGroup);
-
-    // 扫描仪组：缩放 + 向左偏移
+    // 仅扫描仪：3D 场景
     auto* scanGroup = new osg::MatrixTransform;
     scanGroup->setMatrix(osg::Matrix::translate(0.0f, 250.0f, 0.0f) *
                          osg::Matrix::rotate(osg::DegreesToRadians(90.0f), osg::Vec3(0, 0, 1)) *
                          osg::Matrix::scale(0.9f, 0.9f, 0.9f));
     {
-        auto* target = createPoseModel(stlPath, 0, 1, 0);   // 绿
+        auto* target = createPoseModel(stlPath, 0, 1, 0);
         if (target)  scanGroup->addChild(target);
     }
     root->addChild(scanGroup);
@@ -432,7 +418,7 @@ void CalibBoard2D::paintEvent(QPaintEvent*)
     }
 
     // 标志点（红色圆点 + 编号）
-    int markerCols = 7, markerRows = 6;
+    int markerCols = 6, markerRows = 7;
     float xMargin = boardW * 0.08f;
     float yMargin = boardH * 0.08f;
     float xStep = (boardW - 2 * xMargin) / (markerCols - 1);

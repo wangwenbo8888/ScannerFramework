@@ -269,38 +269,35 @@ void MainWindow::onCalibDeviceClicked()
         osg::ref_ptr<osg::Group> scene = calib_display::buildCalibScene(stlTarget);
         m_3dView->setSceneData(scene);
         m_3dView->setCenterOverlayVisible(false);
-        m_3dView->setCameraManipulator(new osgGA::TrackballManipulator());
-        m_3dView->home();
+        // 设置视角：X横、Y竖、Z朝外（正前视图）
+        auto* manip = new osgGA::TrackballManipulator();
+        // 计算模型包围球
+        osg::BoundingSphere bs = scene->getBound();
+        double dist = bs.radius() * 3.0;
+        if (dist < 100.0) dist = 500.0;
+        // 相机对准模型中心
+        manip->setHomePosition(
+            osg::Vec3(bs.center().x(), bs.center().y(), bs.center().z() + dist),
+            bs.center(),
+            osg::Vec3(0.0, 1.0, 0.0)
+        );
+        m_3dView->setCameraManipulator(manip);
+        manip->home(0);
 
-        // 创建分屏：左 OSGWidget(3D) + 右 CalibBoard2D(2D)
-        if (!m_calibSplitWidget) {
-            m_calibSplitWidget = new QWidget();
+        // 创建 2D 标定板，加入 3D 视图布局（各占一半）
+        if (!m_calibBoard2D) {
             m_calibBoard2D = new calib_display::CalibBoard2D();
-
-            // 找到 3D 视图的父布局
-            auto* oldParent = m_3dView->parentWidget();
-            auto* oldLayout = oldParent ? oldParent->layout() : nullptr;
-
-            auto* splitLayout = new QHBoxLayout(m_calibSplitWidget);
-            splitLayout->setContentsMargins(0, 0, 0, 0);
-            splitLayout->setSpacing(0);
-
-            // 把 m_3dView 从原父控件移到分屏左侧
-            m_3dView->setParent(m_calibSplitWidget);
-            splitLayout->addWidget(m_3dView, 3);      // 左：3D 扫描仪
-            splitLayout->addWidget(m_calibBoard2D, 2); // 右：2D 标定板
-
-            // 替换原布局内容
-            if (oldLayout) {
-                // 清空原布局中的渐变条等
-                while (oldLayout->count() > 0) {
-                    auto* item = oldLayout->takeAt(0);
-                    if (item->widget()) item->widget()->setParent(m_3dViewArea);
+            // 找到 m_3dView 所在的 QHBoxLayout
+            auto* parent = m_3dView->parentWidget();
+            if (parent) {
+                auto* layout = qobject_cast<QHBoxLayout*>(parent->layout());
+                if (layout) {
+                    // 调整 m_3dView 和标定板各占一半
+                    layout->addWidget(m_calibBoard2D, 1);
                 }
-                oldLayout->addWidget(m_calibSplitWidget);
             }
         }
-        m_calibSplitWidget->show();
+        m_calibBoard2D->show();
         m_calibBoard2D->update();
 
         statusBar()->showMessage(QStringLiteral("标定显示模式"));
