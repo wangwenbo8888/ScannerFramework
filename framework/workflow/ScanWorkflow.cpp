@@ -343,7 +343,6 @@ void ScanWorkflow::scanLoop() {
         }
 
         try {
-
         // Stage 0: Capture
         auto r0 = capture_->process();
         if (!r0.success || r0.isDegraded()) continue;
@@ -351,20 +350,16 @@ void ScanWorkflow::scanLoop() {
         if (frame.leftGray.empty() || frame.rightGray.empty()) continue;
         ++frameCount;
 
-        // Stage 1: Preprocess
+        // Stage 1: Preprocess（OpenCV 阈值掩码）
         preprocess_->setInput(frame);
         preprocess_->process();
-        notifyProgress("Preprocess", 0.25f);
 
-        // Stage 2: Marker chain（暂时禁用算子，验证管线稳定性）
+        // Stage 2: Marker chain（复用算子对象）
         marker_->setInput(frame, preprocess_->leftMarkerMask, preprocess_->rightMarkerMask);
-        // marker_->process();  // TODO: 算子内部状态累积导致崩溃，待修复
-        notifyProgress("Marker", 0.60f);
+        marker_->process();
 
-        // Stage 3: Laser chain (CUDA only)
-        laser_->setInput(frame);
-        laser_->process();
-        notifyProgress("Laser", 0.80f);
+        // Stage 3: Laser (CUDA only, 跳过)
+        // laser_->process();
 
         // Stage 4: Fuse
         if (marker_->result.success && !marker_->result.markerPoints3d.empty()) {
@@ -372,18 +367,15 @@ void ScanWorkflow::scanLoop() {
                              marker_->result.R, marker_->result.T);
         }
         fuse_->process();
-        notifyProgress("Fuse", 1.0f);
 
-        // Session tracking
-        if (ctx_ && ctx_->session()) {
-            ctx_->session()->onFrameProcessed();
-            if (marker_->result.success) ctx_->session()->onFrameFused();
+        if (frameCount % 100 == 0) {
+            spdlog::info("[ScanWorkflow] 已处理 {} 帧", frameCount);
         }
 
         } catch (const std::exception& e) {
-            spdlog::error("[ScanWorkflow] 帧处理异常: {}", e.what());
+            spdlog::error("[ScanWorkflow] 异常: {}", e.what());
         } catch (...) {
-            spdlog::error("[ScanWorkflow] 帧处理未知异常");
+            spdlog::error("[ScanWorkflow] 未知异常");
         }
     }
 

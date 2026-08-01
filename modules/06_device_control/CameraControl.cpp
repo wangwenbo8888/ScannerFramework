@@ -19,23 +19,32 @@ public:
     void DoOnImageCaptured(CImageDataPointer& imageData, void* /*pUserParam*/) override {
         if (imageData->GetStatus() != GX_FRAME_STATUS_SUCCESS) return;
 
+        try {
         int w = static_cast<int>(imageData->GetWidth());
         int h = static_cast<int>(imageData->GetHeight());
         uint64_t fid = imageData->GetFrameID();
 
-        cv::Mat raw(h, w, CV_8UC1);
-        std::memcpy(raw.data, imageData->GetBuffer(), static_cast<size_t>(h) * w);
-
-        auto& buf = m_owner->m_buffers[m_sideIndex];
+        // 1. 先处理到局部变量（不加锁）
+        cv::Mat processed(h, w, CV_8UC1);
+        std::memcpy(processed.data, imageData->GetBuffer(), static_cast<size_t>(h) * w);
         if (m_sideIndex == 1 && m_rotateRight) {
-            cv::rotate(raw, buf.image, cv::ROTATE_180);
-        } else {
-            buf.image = std::move(raw);
+            cv::Mat tmp;
+            cv::rotate(processed, tmp, cv::ROTATE_180);
+            processed = std::move(tmp);
         }
-        buf.frameId = fid;
-        buf.ready.store(true, std::memory_order_release);
 
+        // 2. 加锁写入缓冲区
+        {
+            std::lock_guard<std::mutex> lock(m_owner->m_bufferMutex);
+            auto& buf = m_owner->m_buffers[m_sideIndex];
+            buf.image = std::move(processed);
+            buf.frameId = fid;
+            buf.ready.store(true, std::memory_order_relaxed);
+        }
+
+        // 3. 尝试配对交付
         tryDeliver();
+        } catch (...) {}
     }
 
 private:
@@ -43,10 +52,16 @@ private:
         auto& leftBuf  = m_owner->m_buffers[0];
         auto& rightBuf = m_owner->m_buffers[1];
 
+        // 用 CameraControl 的共享锁，保护左右两个线程互斥
+        std::lock_guard<std::mutex> lock(m_owner->m_bufferMutex);
+
         if (!leftBuf.ready.load(std::memory_order_acquire) ||
             !rightBuf.ready.load(std::memory_order_acquire)) {
             return;
         }
+
+        leftBuf.ready.store(false, std::memory_order_release);
+        rightBuf.ready.store(false, std::memory_order_release);
 
         uint64_t fid = std::max(leftBuf.frameId, rightBuf.frameId);
 
@@ -56,10 +71,7 @@ private:
         frame.leftGray  = leftBuf.image.clone();
         frame.rightGray = rightBuf.image.clone();
 
-        leftBuf.ready.store(false, std::memory_order_release);
-        rightBuf.ready.store(false, std::memory_order_release);
-
-        std::lock_guard lock(m_owner->m_callbackMutex);
+        std::lock_guard cbLock(m_owner->m_callbackMutex);
         if (m_owner->m_frameCallback) {
             m_owner->m_frameCallback(frame);
         }
@@ -195,24 +207,43 @@ Result CameraControl::setFrameRate(double) { return Result::ok(); }
 
 Result CameraControl::setResolution(int width, int height) {
     if (!m_isOpen) return Result::fail("设备未打开");
+    spdlog::info("[CameraControl] setResolution: 请求 {}x{}", width, height);
+
     for (int i = 0; i < 2; ++i) {
         auto& fc = m_sides[i].featureControl;
         if (fc.IsNull()) continue;
         try {
-            // 停止采集才能改分辨率
-            if (m_sides[i].isCapturing) {
-                fc->GetCommandFeature("AcquisitionStop")->Execute();
-            }
+            // 读取传感器参数
+            int64_t wMax = fc->GetIntFeature("WidthMax")->GetValue();
+            int64_t hMax = fc->GetIntFeature("HeightMax")->GetValue();
+            int64_t wInc = fc->GetIntFeature("Width")->GetInc();
+            int64_t hInc = fc->GetIntFeature("Height")->GetInc();
+            spdlog::info("[CameraControl] side={} sensor max={}x{} inc={}x{}", i, wMax, hMax, wInc, hInc);
+
+            // 步进对齐 + 边界检查
+            width = std::max((int)wInc, std::min(width, (int)wMax));
+            height = std::max((int)hInc, std::min(height, (int)hMax));
+            width = (width / (int)wInc) * (int)wInc;
+            height = (height / (int)hInc) * (int)hInc;
+
+            // 大恒要求: 先设 OffsetX/Y 再设 Width/Height
+            int64_t offXInc = fc->GetIntFeature("OffsetX")->GetInc();
+            int64_t offYInc = fc->GetIntFeature("OffsetY")->GetInc();
+            int64_t offX = ((wMax - width) / 2 / offXInc) * offXInc;
+            int64_t offY = ((hMax - height) / 2 / offYInc) * offYInc;
+
+            fc->GetIntFeature("OffsetX")->SetValue(offX);
+            fc->GetIntFeature("OffsetY")->SetValue(offY);
             fc->GetIntFeature("Width")->SetValue(width);
             fc->GetIntFeature("Height")->SetValue(height);
-            fc->GetIntFeature("OffsetX")->SetValue(0);
-            fc->GetIntFeature("OffsetY")->SetValue(0);
-            if (m_sides[i].isCapturing) {
-                fc->GetCommandFeature("AcquisitionStart")->Execute();
-            }
-            spdlog::info("[CameraControl] 分辨率设置 side={}: {}x{}", i, width, height);
+
+            // 读回验证
+            int64_t actW = fc->GetIntFeature("Width")->GetValue();
+            int64_t actH = fc->GetIntFeature("Height")->GetValue();
+            spdlog::info("[CameraControl] side={} ROI 设置成功: {}x{} off=({},{})", i, actW, actH, offX, offY);
+
         } catch (CGalaxyException& e) {
-            spdlog::error("[CameraControl] 分辨率设置失败 side={}: {}", i, e.what());
+            spdlog::error("[CameraControl] ROI 失败 side={}: {}", i, e.what());
             return Result::fail(e.what());
         }
     }
@@ -243,9 +274,18 @@ void CameraControl::startSideCapture(int sideIndex) {
 
     applySideParams(sideIndex);
 
+    // 解除帧率上限限制
+    try {
+        side.featureControl->GetBoolFeature("AcquisitionFrameRateEnable")->SetValue(false);
+        spdlog::info("[CameraControl] side {} 已解除 AcquisitionFrameRate 上限", sideIndex);
+    } catch (CGalaxyException&) {
+        // 某些相机不支持此功能，忽略
+    }
+
     side.featureControl->GetEnumFeature("TriggerSelector")->SetValue("FrameStart");
     side.featureControl->GetEnumFeature("TriggerMode")->SetValue("On");
     side.featureControl->GetEnumFeature("TriggerSource")->SetValue(m_config.triggerSource.c_str());
+    spdlog::info("[CameraControl] side {} 硬件触发: {}", sideIndex, m_config.triggerSource);
 
     side.featureControl->GetCommandFeature("AcquisitionStart")->Execute();
     side.isCapturing = true;

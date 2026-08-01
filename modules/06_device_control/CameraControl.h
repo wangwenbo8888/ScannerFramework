@@ -103,6 +103,7 @@ private:
 
     hal::FrameCallback m_frameCallback;
     mutable std::mutex m_callbackMutex;
+    mutable std::mutex m_bufferMutex;  // 保护 tryDeliver 的缓冲区访问
 
     void startSideCapture(int sideIndex);
     void stopSideCapture(int sideIndex);

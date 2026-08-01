@@ -80,26 +80,23 @@ ScannerWindow::ScannerWindow(AppContext* appCtx, QWidget *parent)
     connect(m_fpsTimer, &QTimer::timeout, this, &ScannerWindow::onTimeout);
     m_fpsTimer->start(1000);
 
-    // 帧显示定时器 — 从最新帧更新 UI（不消费 FrameBuffer）
+    // 显示定时器 — 固定频率从 FrameBuffer 取最新帧显示
     m_consumerTimer = new QTimer(this);
     connect(m_consumerTimer, &QTimer::timeout, this, [this]() {
-        cv::Mat left, right;
-        {
-            std::lock_guard lock(m_latestMutex);
-            if (m_latestLeft.empty()) return;
-            left = m_latestLeft;
-            right = m_latestRight;
+        if (!m_frameBuffer) return;
+        // 取出所有积压帧，只显示最新的一帧
+        std::optional<Scanner::data::FrameData> latest;
+        while (auto f = m_frameBuffer->popFrame(std::chrono::milliseconds(0))) {
+            latest = std::move(f);
         }
+        if (!latest || latest->leftGray.empty()) return;
 
         cv::Mat leftReduced, rightReduced;
-        cv::resize(left, leftReduced, cv::Size(), 0.25, 0.25, cv::INTER_AREA);
-        cv::resize(right, rightReduced, cv::Size(), 0.25, 0.25, cv::INTER_AREA);
-
-        QImage leftImg = matToQImage(leftReduced);
-        QImage rightImg = matToQImage(rightReduced);
-        emit updateImages(leftImg, rightImg);
+        cv::resize(latest->leftGray, leftReduced, cv::Size(), 0.25, 0.25, cv::INTER_AREA);
+        cv::resize(latest->rightGray, rightReduced, cv::Size(), 0.25, 0.25, cv::INTER_AREA);
+        emit updateImages(matToQImage(leftReduced), matToQImage(rightReduced));
     });
-    m_consumerTimer->start(33);
+    m_consumerTimer->start(100);  // 显示固定 10fps，不影响采集帧率
 
     // 图像更新信号
     connect(this, &ScannerWindow::updateImages, this, [this](QImage left, QImage right) {
@@ -112,20 +109,15 @@ ScannerWindow::ScannerWindow(AppContext* appCtx, QWidget *parent)
     // 打开串口
     openPorts();
 
-    // 分辨率选择下拉框（添加到信息面板旁边）
+    // 分辨率选择下拉框
     m_resCombo = new QComboBox(this);
     m_resCombo->addItem("2048x1536", QSize(2048, 1536));
     m_resCombo->addItem("1280x1024", QSize(1280, 1024));
     m_resCombo->addItem("1024x768",  QSize(1024, 768));
     m_resCombo->addItem("640x480",   QSize(640, 480));
-    // 添加到工具栏区域
-    QWidget* bar = new QWidget(this);
-    QHBoxLayout* hl = new QHBoxLayout(bar);
-    hl->setContentsMargins(2, 2, 2, 2);
-    QLabel* lbl = new QLabel(QStringLiteral("分辨率:"), bar);
-    hl->addWidget(lbl);
-    hl->addWidget(m_resCombo);
-    ui.verticalLayout->addWidget(bar);
+    m_resCombo->setFixedWidth(150);
+    m_resCombo->move(80, 490);
+    m_resCombo->show();
     connect(m_resCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &ScannerWindow::onResolutionChanged);
 
@@ -312,19 +304,9 @@ void ScannerWindow::onStartScanner()
     sendData(m_serialPort1, startCmd);
     sendData(m_serialPort2, startCmd);
 
-    // 再启动相机采集 — 帧推入 FrameBuffer + 统计实际采集帧率
+    // 相机采集 — 回调只做计数+入队，最轻量
     auto r = m_cam->startAsyncCapture([this](const Scanner::hal::StereoFrame& frame) {
-        // 统计实际采集帧率
         ++m_frameCount;
-
-        // 存最新帧给 UI 显示
-        {
-            std::lock_guard lock(m_latestMutex);
-            m_latestLeft = frame.leftGray;
-            m_latestRight = frame.rightGray;
-        }
-
-        // 推入 FrameBuffer 供 ScanWorkflow 处理
         Scanner::data::FrameData fd;
         fd.frameId = frame.frameId;
         fd.timestamp = frame.timestamp;
@@ -338,13 +320,11 @@ void ScannerWindow::onStartScanner()
         return;
     }
 
-    // 启动 ScanWorkflow（处理管线: Capture→Preprocess→Marker→Laser→Fuse）
-    if (m_appCtx && m_appCtx->scanWorkflow()) {
-        m_appCtx->scanWorkflow()->initialize();
-        auto wfR = m_appCtx->scanWorkflow()->start();
-        ui.textEdit_Info->append(wfR.success ?
-            "扫描管线已启动" : QString("管线启动失败: %1").arg(QString::fromStdString(wfR.message)));
-    }
+    // 启动 ScanWorkflow（暂时禁用，定位崩溃原因）
+    // if (m_appCtx && m_appCtx->scanWorkflow()) {
+    //     m_appCtx->scanWorkflow()->initialize();
+    //     auto wfR = m_appCtx->scanWorkflow()->start();
+    // }
 
     // 启动 HardwareMonitor（周期采集温度/帧率）
     if (m_appCtx && m_appCtx->hwMonitor()) {
@@ -453,36 +433,16 @@ void ScannerWindow::onSliderExposeChanged(int v)
 
 void ScannerWindow::onResolutionChanged(int index)
 {
-    if (!m_cam || !m_cam->isOpen()) {
-        ui.textEdit_Info->append("请先打开相机再切换分辨率");
-        return;
-    }
     QSize res = m_resCombo->itemData(index).toSize();
-    bool wasCapturing = m_cam->isCapturing();
-    if (wasCapturing) m_cam->stopAsyncCapture();
+    m_pendingWidth = res.width();
+    m_pendingHeight = res.height();
 
-    auto r = m_cam->setResolution(res.width(), res.height());
-    if (r.success) {
-        ui.textEdit_Info->append(QString("分辨率: %1x%2").arg(res.width()).arg(res.height()));
+    if (m_cam && m_cam->isOpen()) {
+        ui.textEdit_Info->append(QString("分辨率将在下次打开相机时生效: %1x%2")
+            .arg(res.width()).arg(res.height()));
+        ui.textEdit_Info->append("请先关闭相机，再重新打开");
     } else {
-        ui.textEdit_Info->append(QString("分辨率设置失败: %1").arg(QString::fromStdString(r.message)));
-    }
-
-    if (wasCapturing) {
-        m_cam->startAsyncCapture([this](const Scanner::hal::StereoFrame& frame) {
-            ++m_frameCount;
-            {
-                std::lock_guard lock(m_latestMutex);
-                m_latestLeft = frame.leftGray;
-                m_latestRight = frame.rightGray;
-            }
-            Scanner::data::FrameData fd;
-            fd.frameId = frame.frameId;
-            fd.timestamp = frame.timestamp;
-            fd.leftGray = frame.leftGray;
-            fd.rightGray = frame.rightGray;
-            m_frameBuffer->pushFrame(fd);
-        });
+        ui.textEdit_Info->append(QString("分辨率预设: %1x%2").arg(res.width()).arg(res.height()));
     }
 }
 

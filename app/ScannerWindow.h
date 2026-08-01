@@ -55,15 +55,12 @@ private:
     QTimer* m_fpsTimer = nullptr;
     QTimer* m_consumerTimer = nullptr;
     QComboBox* m_resCombo = nullptr;
+    int m_pendingWidth = 0;
+    int m_pendingHeight = 0;
 
     uint64_t m_frameCount = 0;
     uint64_t m_prevFrameCount = 0;
     uint64_t m_currentFps = 0;
-
-    // 最新帧（显示用，不消费 FrameBuffer）
-    cv::Mat m_latestLeft;
-    cv::Mat m_latestRight;
-    std::mutex m_latestMutex;
 
     // 串口
     QSerialPort* m_serialPort1 = nullptr;
