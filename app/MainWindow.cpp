@@ -264,8 +264,15 @@ void MainWindow::onCalibDeviceClicked()
             m_floatingToolbar->move(-10000, -10000);
         }
 
-        std::string stlPath = "E:/workfold/20260509intergrate/JEAMMSCAN.stl";
-        osg::ref_ptr<osg::Group> scene = calib_display::buildCalibScene(stlPath);
+        // 隐藏悬浮工具条
+        if (m_floatingToolbar) {
+            m_floatingToolbar->setVisible(false);
+            m_floatingToolbar->hide();
+            m_floatingToolbar->move(-10000, -10000);
+        }
+
+        std::string stlTarget = "E:/workfold/framework/build/JEAMMSCAN.stl";
+        osg::ref_ptr<osg::Group> scene = calib_display::buildCalibScene(stlTarget);
         {
             FILE* f = fopen("E:/workfold/20260509intergrate/calib_debug.log", "a");
             if (f) { fprintf(f, "scene=%p children=%d\n", (void*)scene.get(), scene.valid() ? (int)scene->getNumChildren() : -1); fclose(f); }
@@ -374,6 +381,7 @@ void MainWindow::createFloatingToolbar()
 void MainWindow::repositionFloatingToolbar()
 {
     if (!m_floatingToolbar || !m_3dView) return;
+    if (!m_floatingToolbar->isVisible()) return;
     if (!m_floatingToolbar->isVisible()) return;  // 已隐藏则不处理
     m_floatingToolbar->adjustSize();
     QRect viewGeo = m_3dView->geometry();

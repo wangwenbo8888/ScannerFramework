@@ -266,16 +266,8 @@ static osg::MatrixTransform* createPoseModel(const std::string& stlPath,
     xform->addChild(child);
 
     osg::StateSet* ss = xform->getOrCreateStateSet();
-    ss->setMode(GL_CULL_FACE, osg::StateAttribute::ON);
-
-    // 加光照和材质
-    osg::ref_ptr<osg::Material> mat = new osg::Material;
-    mat->setDiffuse(osg::Material::FRONT, osg::Vec4(r * 0.8f, g * 0.8f, b * 0.8f, 0.85f));
-    mat->setSpecular(osg::Material::FRONT, osg::Vec4(0.3f, 0.3f, 0.3f, 1.0f));
-    mat->setShininess(osg::Material::FRONT, 30.0f);
-    ss->setAttribute(mat);
-    ss->setMode(GL_LIGHTING, osg::StateAttribute::ON);
-    ss->setMode(GL_NORMALIZE, osg::StateAttribute::ON);
+    ss->setMode(GL_CULL_FACE, osg::StateAttribute::OFF);
+    ss->setMode(GL_LIGHTING, osg::StateAttribute::OFF);
     ss->setMode(GL_BLEND, osg::StateAttribute::ON);
     ss->setRenderingHint(osg::StateSet::TRANSPARENT_BIN);
     return xform;
@@ -378,21 +370,15 @@ osg::Group* buildCalibScene(const std::string& stlPath)
     }
     root->addChild(boardGroup);
 
-    // 扫描仪组：缩放 0.6 + 绕 Z 顺时针 90° + 向左偏移(-Y) + 下方(-Y)
+    // 扫描仪组：缩放 + 向左偏移
     auto* scanGroup = new osg::MatrixTransform;
-    scanGroup->setMatrix(osg::Matrix::translate(0.0f, -420.0f, 0.0f) *
-                         osg::Matrix::rotate(osg::DegreesToRadians(-90.0f), osg::Vec3(0, 0, 1)) *
+    scanGroup->setMatrix(osg::Matrix::translate(-400.0f, 0.0f, 0.0f) *
                          osg::Matrix::scale(0.6f, 0.6f, 0.6f));
     {
         auto* target = createPoseModel(stlPath, 0, 1, 0);   // 绿
-        auto* current = createPoseModel(stlPath, 1, 0, 0);  // 红
         if (target)  scanGroup->addChild(target);
-        if (current) scanGroup->addChild(current);
     }
     root->addChild(scanGroup);
-
-    // 偏差 HUD
-    root->addChild(createHud(1280, 720));
 
     return root.release();
 }

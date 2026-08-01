@@ -12,5 +12,4 @@ namespace calib_display {
 //   - 偏差 HUD（前后/左右/远近/俯仰/偏航/翻滚 + 色阶条）
 // stlPath: 扫描仪 STL 模型路径
 osg::Group* buildCalibScene(const std::string& stlPath);
-
 } // namespace calib_display
