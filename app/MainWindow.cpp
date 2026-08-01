@@ -271,11 +271,9 @@ void MainWindow::onCalibDeviceClicked()
         m_3dView->setCenterOverlayVisible(false);
         // 设置视角：X横、Y竖、Z朝外（正前视图）
         auto* manip = new osgGA::TrackballManipulator();
-        // 计算模型包围球
+        // 固定相机距离（不随模型大小变化）
         osg::BoundingSphere bs = scene->getBound();
-        double dist = bs.radius() * 3.0;
-        if (dist < 100.0) dist = 500.0;
-        // 相机对准模型中心
+        double dist = 500.0;  // 固定距离
         manip->setHomePosition(
             osg::Vec3(bs.center().x(), bs.center().y(), bs.center().z() + dist),
             bs.center(),

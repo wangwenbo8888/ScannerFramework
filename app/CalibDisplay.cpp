@@ -363,7 +363,7 @@ osg::Group* buildCalibScene(const std::string& stlPath)
     auto* scanGroup = new osg::MatrixTransform;
     scanGroup->setMatrix(osg::Matrix::translate(0.0f, 250.0f, 0.0f) *
                          osg::Matrix::rotate(osg::DegreesToRadians(90.0f), osg::Vec3(0, 0, 1)) *
-                         osg::Matrix::scale(0.9f, 0.9f, 0.9f));
+                         osg::Matrix::scale(0.7f, 0.7f, 0.7f));
     {
         auto* target = createPoseModel(stlPath, 0, 1, 0);
         if (target)  scanGroup->addChild(target);
