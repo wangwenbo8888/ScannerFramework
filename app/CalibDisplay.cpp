@@ -427,8 +427,8 @@ void CalibBoard2D::paintEvent(QPaintEvent*)
 
     p.setFont(QFont("Arial", 7));
     int idx = 0;
-    for (int r = 0; r < markerRows; ++r) {
-        for (int c = 0; c < markerCols; ++c) {
+    for (int c = 0; c < markerCols; ++c) {
+        for (int r = 0; r < markerRows; ++r) {
             float cx = boardX + xMargin + c * xStep;
             float cy = boardY + yMargin + r * yStep;
 
