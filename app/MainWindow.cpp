@@ -271,9 +271,8 @@ void MainWindow::onCalibDeviceClicked()
         m_3dView->setCenterOverlayVisible(false);
         // 设置视角：X横、Y竖、Z朝外（正前视图）
         auto* manip = new osgGA::TrackballManipulator();
-        // 固定相机距离（不随模型大小变化）
         osg::BoundingSphere bs = scene->getBound();
-        double dist = 500.0;  // 固定距离
+        double dist = 500.0;
         manip->setHomePosition(
             osg::Vec3(bs.center().x(), bs.center().y(), bs.center().z() + dist),
             bs.center(),
@@ -281,6 +280,11 @@ void MainWindow::onCalibDeviceClicked()
         );
         m_3dView->setCameraManipulator(manip);
         manip->home(0);
+        // 等 OSG 应用视角后锁定
+        m_3dView->viewer()->frame();
+        osg::Matrix lockedView = m_3dView->viewer()->getCamera()->getViewMatrix();
+        m_3dView->setCameraManipulator(nullptr);
+        m_3dView->viewer()->getCamera()->setViewMatrix(lockedView);
 
         // 创建 2D 标定板，加入 3D 视图布局（各占一半）
         if (!m_calibBoard2D) {
