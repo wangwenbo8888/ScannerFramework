@@ -37,7 +37,7 @@ static const float kMarkerRadius = 3.0f;
 static const int   kMarkerCols = 7;
 static const int   kMarkerRows = 6;
 
-// 标定板矩形平面
+// 标定板白色底板
 static osg::Geometry* createBoardPlane()
 {
     float hw = kBoardW * 0.5f;
@@ -53,7 +53,7 @@ static osg::Geometry* createBoardPlane()
     n->push_back(osg::Vec3(0, 0, 1));
 
     osg::ref_ptr<osg::Vec4Array> c = new osg::Vec4Array;
-    c->push_back(osg::Vec4(0.7f, 0.7f, 0.7f, 1.0f));
+    c->push_back(osg::Vec4(0.95f, 0.95f, 0.95f, 1.0f));
 
     osg::ref_ptr<osg::Geometry> g = new osg::Geometry;
     g->setUseDisplayList(false);
@@ -262,12 +262,20 @@ static osg::MatrixTransform* createPoseModel(const std::string& stlPath,
 
     auto* cloned = dynamic_cast<osg::Node*>(geo->clone(osg::CopyOp::DEEP_COPY_NODES));
     osg::Node* child = cloned ? cloned : geo.get();
-    applyColorRecursive(child, osg::Vec4(r, g, b, 0.6f));
+    applyColorRecursive(child, osg::Vec4(r, g, b, 0.85f));
     xform->addChild(child);
 
     osg::StateSet* ss = xform->getOrCreateStateSet();
-    ss->setMode(GL_CULL_FACE, osg::StateAttribute::OFF);
-    ss->setMode(GL_LIGHTING, osg::StateAttribute::OFF);
+    ss->setMode(GL_CULL_FACE, osg::StateAttribute::ON);
+
+    // 加光照和材质
+    osg::ref_ptr<osg::Material> mat = new osg::Material;
+    mat->setDiffuse(osg::Material::FRONT, osg::Vec4(r * 0.8f, g * 0.8f, b * 0.8f, 0.85f));
+    mat->setSpecular(osg::Material::FRONT, osg::Vec4(0.3f, 0.3f, 0.3f, 1.0f));
+    mat->setShininess(osg::Material::FRONT, 30.0f);
+    ss->setAttribute(mat);
+    ss->setMode(GL_LIGHTING, osg::StateAttribute::ON);
+    ss->setMode(GL_NORMALIZE, osg::StateAttribute::ON);
     ss->setMode(GL_BLEND, osg::StateAttribute::ON);
     ss->setRenderingHint(osg::StateSet::TRANSPARENT_BIN);
     return xform;

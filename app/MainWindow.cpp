@@ -257,6 +257,13 @@ void MainWindow::onCalibDeviceClicked()
     }
     // 直接在 3D 窗口显示标定场景（不弹 CalibDialog）
     if (m_3dView) {
+        // 隐藏悬浮工具条
+        if (m_floatingToolbar) {
+            m_floatingToolbar->setVisible(false);
+            m_floatingToolbar->hide();
+            m_floatingToolbar->move(-10000, -10000);
+        }
+
         std::string stlPath = "E:/workfold/20260509intergrate/JEAMMSCAN.stl";
         osg::ref_ptr<osg::Group> scene = calib_display::buildCalibScene(stlPath);
         {
@@ -367,6 +374,7 @@ void MainWindow::createFloatingToolbar()
 void MainWindow::repositionFloatingToolbar()
 {
     if (!m_floatingToolbar || !m_3dView) return;
+    if (!m_floatingToolbar->isVisible()) return;  // 已隐藏则不处理
     m_floatingToolbar->adjustSize();
     QRect viewGeo = m_3dView->geometry();
     QPoint viewBottomCenter = m_3dView->mapToGlobal(QPoint(viewGeo.width() / 2, viewGeo.height()));
