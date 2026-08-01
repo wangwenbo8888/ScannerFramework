@@ -168,20 +168,56 @@ Result CameraControl::setExposure(double ms) {
     m_currentExposureMs = ms;
     applySideParams(0);
     applySideParams(1);
-    spdlog::info("[CameraControl] 曝光设置为 {} ms", ms);
+    // 读回验证
+    try {
+        double actual = m_sides[0].featureControl->GetFloatFeature("ExposureTime")->GetValue();
+        spdlog::info("[CameraControl] 曝光设置: 请求={}ms 实际={}µs ({:.3f}ms)", ms, actual, actual/1000.0);
+    } catch (...) {}
     return Result::ok();
 }
 
 void CameraControl::applySideParams(int sideIndex) {
     auto& fc = m_sides[sideIndex].featureControl;
-    if (fc.IsNull()) return;
-    fc->GetEnumFeature("ExposureAuto")->SetValue("Off");
-    fc->GetFloatFeature("ExposureTime")->SetValue(m_currentExposureMs * 1000.0);
+    if (fc.IsNull()) {
+        spdlog::warn("[CameraControl] applySideParams: featureControl 为空 (side={})", sideIndex);
+        return;
+    }
+    try {
+        fc->GetEnumFeature("ExposureAuto")->SetValue("Off");
+        fc->GetFloatFeature("ExposureTime")->SetValue(m_currentExposureMs * 1000.0);
+    } catch (CGalaxyException& e) {
+        spdlog::error("[CameraControl] 曝光设置异常(side={}): {}", sideIndex, e.what());
+    }
 }
 
 Result CameraControl::setGain(double) { return Result::ok(); }
 Result CameraControl::setFrameRate(double) { return Result::ok(); }
-Result CameraControl::setResolution(int, int) { return Result::ok(); }
+
+Result CameraControl::setResolution(int width, int height) {
+    if (!m_isOpen) return Result::fail("设备未打开");
+    for (int i = 0; i < 2; ++i) {
+        auto& fc = m_sides[i].featureControl;
+        if (fc.IsNull()) continue;
+        try {
+            // 停止采集才能改分辨率
+            if (m_sides[i].isCapturing) {
+                fc->GetCommandFeature("AcquisitionStop")->Execute();
+            }
+            fc->GetIntFeature("Width")->SetValue(width);
+            fc->GetIntFeature("Height")->SetValue(height);
+            fc->GetIntFeature("OffsetX")->SetValue(0);
+            fc->GetIntFeature("OffsetY")->SetValue(0);
+            if (m_sides[i].isCapturing) {
+                fc->GetCommandFeature("AcquisitionStart")->Execute();
+            }
+            spdlog::info("[CameraControl] 分辨率设置 side={}: {}x{}", i, width, height);
+        } catch (CGalaxyException& e) {
+            spdlog::error("[CameraControl] 分辨率设置失败 side={}: {}", i, e.what());
+            return Result::fail(e.what());
+        }
+    }
+    return Result::ok();
+}
 
 // ============================================================================
 // 标定（TODO）

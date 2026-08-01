@@ -75,7 +75,14 @@ Result PreprocessStage::process() {
 // MarkerStage — 标记点检测链
 // ============================================================================
 MarkerStage::MarkerStage(WorkflowContext* ctx)
-    : Stage("Marker"), ctx_(ctx) {}
+    : Stage("Marker"), ctx_(ctx) {
+    // 创建算子一次，复用
+    zernikeOp_ = std::make_unique<calib::ZernikeEdgeCPU>();
+    ellipseOp_ = std::make_unique<calib::EllipseFitCPU>();
+    matchOp_ = std::make_unique<calib::MarkerMatchCPU>();
+}
+
+MarkerStage::~MarkerStage() = default;
 
 void MarkerStage::setInput(const data::FrameData& frame,
                             const cv::Mat& leftMask, const cv::Mat& rightMask) {
@@ -115,14 +122,12 @@ std::vector<cv::Point2f> MarkerStage::detectCenters(const cv::Mat& gray, const c
         cv::Mat subImage = gray(roi).clone();  // clone 确保连续内存
         if (subImage.empty() || subImage.cols < 5 || subImage.rows < 5) continue;
 
-        // Zernike 边缘提取（可能崩溃，用 try-catch）
-        calib::ZernikeEdgeCPU zernikeOp;
-        auto zr = zernikeOp.Execute(subImage);
+        // Zernike 边缘提取（复用算子对象）
+        auto zr = zernikeOp_->Execute(subImage);
         if (!zr.success || zr.edgePoints.empty()) continue;
 
-        // 椭圆拟合
-        calib::EllipseFitCPU ellipseOp;
-        auto er = ellipseOp.Execute(zr.edgePoints);
+        // 椭圆拟合（复用算子对象）
+        auto er = ellipseOp_->Execute(zr.edgePoints);
         if (!er.success) continue;
 
         auto center = er.centerPoint2f();
@@ -148,9 +153,8 @@ Result MarkerStage::process() {
         return Result::degraded("标记点不足");
     }
 
-    // 立体匹配
-    calib::MarkerMatchCPU matchOp;
-    auto matchR = matchOp.Execute(centersL, centersR);
+    // 立体匹配（复用算子）
+    auto matchR = matchOp_->Execute(centersL, centersR);
     if (!matchR.success || matchR.centerMatches.empty()) {
         spdlog::debug("[MarkerStage] 匹配失败");
         return Result::degraded("匹配失败");
@@ -219,7 +223,11 @@ Result LaserStage::process() {
 // FuseStage — 体素融合 → PointCloudBuffer
 // ============================================================================
 FuseStage::FuseStage(WorkflowContext* ctx)
-    : Stage("Fuse"), ctx_(ctx) {}
+    : Stage("Fuse"), ctx_(ctx) {
+    fuseOp_ = std::make_unique<calib::LaserCloudFuseCPU>();
+}
+
+FuseStage::~FuseStage() = default;
 
 void FuseStage::addPoints(const std::vector<cv::Point3f>& points,
                            const cv::Matx33d& R, const cv::Vec3d& T) {
@@ -234,9 +242,8 @@ Result FuseStage::process() {
     if (pendingPoints_.empty()) return Result::ok("无待融合点");
 
     try {
-    // 体素融合（laser_cloud_fuse_cpu 算子）
-    calib::LaserCloudFuseCPU fuseOp;
-    auto fuseR = fuseOp.Execute(pendingPoints_, pendingR_, pendingT_);
+    // 体素融合（复用算子）
+    auto fuseR = fuseOp_->Execute(pendingPoints_, pendingR_, pendingT_);
 
     if (fuseR.success && ctx_ && ctx_->pointCloudBuffer()) {
         data::PointCloudFrame cloud;
@@ -349,9 +356,9 @@ void ScanWorkflow::scanLoop() {
         preprocess_->process();
         notifyProgress("Preprocess", 0.25f);
 
-        // Stage 2: Marker chain
+        // Stage 2: Marker chain（暂时禁用算子，验证管线稳定性）
         marker_->setInput(frame, preprocess_->leftMarkerMask, preprocess_->rightMarkerMask);
-        marker_->process();
+        // marker_->process();  // TODO: 算子内部状态累积导致崩溃，待修复
         notifyProgress("Marker", 0.60f);
 
         // Stage 3: Laser chain (CUDA only)

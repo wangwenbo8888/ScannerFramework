@@ -25,6 +25,9 @@
 #include <thread>
 #include <mutex>
 
+// 前向声明（全局命名空间）
+namespace calib { class ZernikeEdgeCPU; class EllipseFitCPU; class MarkerMatchCPU; class LaserCloudFuseCPU; }
+
 namespace Scanner::workflow {
 
 // ============================================================================
@@ -85,12 +88,14 @@ private:
     cv::Mat createMarkerMask(const cv::Mat& gray);
 };
 
+//
 // ============================================================================
 // MarkerStage — 标记点链（CCL→split→zernike→ellipse→match→reconstruct）
 // ============================================================================
 class MarkerStage : public Stage {
 public:
     explicit MarkerStage(WorkflowContext* ctx);
+    ~MarkerStage() override;
     Result process() override;
     void setInput(const data::FrameData& frame,
                   const cv::Mat& leftMask, const cv::Mat& rightMask);
@@ -103,6 +108,13 @@ private:
     data::FrameData inputFrame_;
     cv::Mat leftMask_, rightMask_;
     ScanCalibration calib_;
+
+    // 复用算子（避免每帧创建/销毁）
+    std::unique_ptr<::calib::ZernikeEdgeCPU> zernikeOp_;
+    std::unique_ptr<::calib::EllipseFitCPU> ellipseOp_;
+    std::unique_ptr<::calib::MarkerMatchCPU> matchOp_;
+
+    int processCounter_ = 0;  // 隔帧处理计数器
 
     std::vector<cv::Point2f> detectCenters(const cv::Mat& gray, const cv::Mat& mask);
 };
@@ -127,6 +139,7 @@ private:
 class FuseStage : public Stage {
 public:
     explicit FuseStage(WorkflowContext* ctx);
+    ~FuseStage() override;
     Result process() override;
     void addPoints(const std::vector<cv::Point3f>& points,
                    const cv::Matx33d& R, const cv::Vec3d& T);
@@ -136,7 +149,7 @@ private:
     cv::Matx33d pendingR_ = cv::Matx33d::eye();
     cv::Vec3d pendingT_{0, 0, 0};
     mutable std::mutex pointsMutex_;
-    bool fuseInitialized_ = false;
+    std::unique_ptr<::calib::LaserCloudFuseCPU> fuseOp_;
 };
 
 // ============================================================================

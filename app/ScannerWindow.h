@@ -39,6 +39,7 @@ private slots:
     void onSliderBackgroundChanged(int v);
     void onSliderLaserChanged(int v);
     void onSliderExposeChanged(int v);
+    void onResolutionChanged(int index);
 
     void onTimeout();
 
@@ -53,6 +54,7 @@ private:
     Scanner::data::FrameBuffer* m_frameBuffer = nullptr;
     QTimer* m_fpsTimer = nullptr;
     QTimer* m_consumerTimer = nullptr;
+    QComboBox* m_resCombo = nullptr;
 
     uint64_t m_frameCount = 0;
     uint64_t m_prevFrameCount = 0;

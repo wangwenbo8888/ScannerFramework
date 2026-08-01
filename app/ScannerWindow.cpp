@@ -8,6 +8,9 @@
 
 #include <opencv2/imgproc.hpp>
 #include <spdlog/spdlog.h>
+#include <QComboBox>
+#include <QHBoxLayout>
+#include <QLabel>
 
 // ============================================================================
 // Mat → QImage 转换
@@ -108,6 +111,23 @@ ScannerWindow::ScannerWindow(AppContext* appCtx, QWidget *parent)
 
     // 打开串口
     openPorts();
+
+    // 分辨率选择下拉框（添加到信息面板旁边）
+    m_resCombo = new QComboBox(this);
+    m_resCombo->addItem("2048x1536", QSize(2048, 1536));
+    m_resCombo->addItem("1280x1024", QSize(1280, 1024));
+    m_resCombo->addItem("1024x768",  QSize(1024, 768));
+    m_resCombo->addItem("640x480",   QSize(640, 480));
+    // 添加到工具栏区域
+    QWidget* bar = new QWidget(this);
+    QHBoxLayout* hl = new QHBoxLayout(bar);
+    hl->setContentsMargins(2, 2, 2, 2);
+    QLabel* lbl = new QLabel(QStringLiteral("分辨率:"), bar);
+    hl->addWidget(lbl);
+    hl->addWidget(m_resCombo);
+    ui.verticalLayout->addWidget(bar);
+    connect(m_resCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &ScannerWindow::onResolutionChanged);
 
     // ScanWorkflow 进度回调
     if (m_appCtx && m_appCtx->scanWorkflow()) {
@@ -427,6 +447,42 @@ void ScannerWindow::onSliderExposeChanged(int v)
     ui.label_ExposeTime_Value->setText(QString::number(v));
     if (m_cam && m_cam->isOpen()) {
         m_cam->setExposure(v);
+        ui.textEdit_Info->append(QString("曝光设置: %1 ms").arg(v));
+    }
+}
+
+void ScannerWindow::onResolutionChanged(int index)
+{
+    if (!m_cam || !m_cam->isOpen()) {
+        ui.textEdit_Info->append("请先打开相机再切换分辨率");
+        return;
+    }
+    QSize res = m_resCombo->itemData(index).toSize();
+    bool wasCapturing = m_cam->isCapturing();
+    if (wasCapturing) m_cam->stopAsyncCapture();
+
+    auto r = m_cam->setResolution(res.width(), res.height());
+    if (r.success) {
+        ui.textEdit_Info->append(QString("分辨率: %1x%2").arg(res.width()).arg(res.height()));
+    } else {
+        ui.textEdit_Info->append(QString("分辨率设置失败: %1").arg(QString::fromStdString(r.message)));
+    }
+
+    if (wasCapturing) {
+        m_cam->startAsyncCapture([this](const Scanner::hal::StereoFrame& frame) {
+            ++m_frameCount;
+            {
+                std::lock_guard lock(m_latestMutex);
+                m_latestLeft = frame.leftGray;
+                m_latestRight = frame.rightGray;
+            }
+            Scanner::data::FrameData fd;
+            fd.frameId = frame.frameId;
+            fd.timestamp = frame.timestamp;
+            fd.leftGray = frame.leftGray;
+            fd.rightGray = frame.rightGray;
+            m_frameBuffer->pushFrame(fd);
+        });
     }
 }
 
