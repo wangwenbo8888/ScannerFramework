@@ -33,6 +33,7 @@ class CalibDialog;
 class CameraControl;
 class LEADSCANSeries;
 class AppContext;
+namespace calib_display { class CalibBoard2D; }
 
 class MainWindow : public QMainWindow
 {
@@ -95,6 +96,10 @@ protected:
     QWidget *m_floatingToolbar;
 
     AppContext *m_appCtx = nullptr;
+
+    // 标定分屏
+    QWidget* m_calibSplitWidget = nullptr;
+    calib_display::CalibBoard2D* m_calibBoard2D = nullptr;
 
     QWidget *m_integrateTestDialog;
     CalibDialog *m_calibDialog;

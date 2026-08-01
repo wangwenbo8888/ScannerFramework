@@ -23,6 +23,9 @@
 #include <osgDB/ReadFile>
 #include <osgDB/Registry>
 
+#include <QPainter>
+#include <QPainterPath>
+
 #include <cmath>
 #include <cstdio>
 #include <vector>
@@ -382,6 +385,82 @@ osg::Group* buildCalibScene(const std::string& stlPath)
     root->addChild(scanGroup);
 
     return root.release();
+}
+
+// ============================================================================
+// CalibBoard2D — Qt 2D 标定板控件
+// ============================================================================
+CalibBoard2D::CalibBoard2D(QWidget* parent) : QWidget(parent)
+{
+    setAutoFillBackground(true);
+    QPalette pal = palette();
+    pal.setColor(QPalette::Window, Qt::white);
+    setPalette(pal);
+}
+
+void CalibBoard2D::paintEvent(QPaintEvent*)
+{
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+
+    int w = width();
+    int h = height();
+
+    // 白色底板
+    p.fillRect(rect(), QColor(245, 245, 245));
+
+    // 标定板区域（居中，留边距）
+    int margin = 40;
+    int boardX = margin;
+    int boardY = margin;
+    int boardW = w - 2 * margin;
+    int boardH = h - 2 * margin;
+
+    // 白色板面
+    p.fillRect(boardX, boardY, boardW, boardH, Qt::white);
+
+    // 网格线
+    int cols = 7, rows = 6;
+    p.setPen(QPen(QColor(200, 200, 200), 1));
+    for (int i = 0; i <= cols; ++i) {
+        int x = boardX + i * boardW / cols;
+        p.drawLine(x, boardY, x, boardY + boardH);
+    }
+    for (int i = 0; i <= rows; ++i) {
+        int y = boardY + i * boardH / rows;
+        p.drawLine(boardX, y, boardX + boardW, y);
+    }
+
+    // 标志点（红色圆点 + 编号）
+    int markerCols = 7, markerRows = 6;
+    float xMargin = boardW * 0.08f;
+    float yMargin = boardH * 0.08f;
+    float xStep = (boardW - 2 * xMargin) / (markerCols - 1);
+    float yStep = (boardH - 2 * yMargin) / (markerRows - 1);
+    float radius = 8.0f;
+
+    p.setFont(QFont("Arial", 7));
+    int idx = 0;
+    for (int r = 0; r < markerRows; ++r) {
+        for (int c = 0; c < markerCols; ++c) {
+            float cx = boardX + xMargin + c * xStep;
+            float cy = boardY + yMargin + r * yStep;
+
+            // 圆点
+            p.setBrush(QBrush(QColor(200, 50, 50)));
+            p.setPen(Qt::NoPen);
+            p.drawEllipse(QPointF(cx, cy), radius, radius);
+
+            // 编号
+            p.setPen(QPen(Qt::white));
+            p.drawText(QRectF(cx - 10, cy - 8, 20, 16), Qt::AlignCenter, QString::number(idx++));
+        }
+    }
+
+    // 边框
+    p.setPen(QPen(QColor(100, 100, 100), 2));
+    p.setBrush(Qt::NoBrush);
+    p.drawRect(boardX, boardY, boardW, boardH);
 }
 
 } // namespace calib_display

@@ -255,8 +255,8 @@ void MainWindow::onCalibDeviceClicked()
             }
         });
     }
-    // 直接在 3D 窗口显示标定场景（不弹 CalibDialog）
-    if (m_3dView) {
+    // 分屏：左 3D 扫描仪 + 右 2D 标定板
+    if (m_3dView && m_3dViewArea) {
         // 隐藏悬浮工具条
         if (m_floatingToolbar) {
             m_floatingToolbar->setVisible(false);
@@ -264,31 +264,45 @@ void MainWindow::onCalibDeviceClicked()
             m_floatingToolbar->move(-10000, -10000);
         }
 
-        // 隐藏悬浮工具条
-        if (m_floatingToolbar) {
-            m_floatingToolbar->setVisible(false);
-            m_floatingToolbar->hide();
-            m_floatingToolbar->move(-10000, -10000);
-        }
-
+        // 加载扫描仪 STL 到 3D 视图
         std::string stlTarget = "E:/workfold/framework/build/JEAMMSCAN.stl";
         osg::ref_ptr<osg::Group> scene = calib_display::buildCalibScene(stlTarget);
-        {
-            FILE* f = fopen("E:/workfold/20260509intergrate/calib_debug.log", "a");
-            if (f) { fprintf(f, "scene=%p children=%d\n", (void*)scene.get(), scene.valid() ? (int)scene->getNumChildren() : -1); fclose(f); }
-        }
         m_3dView->setSceneData(scene);
-        m_3dView->setCenterOverlayVisible(false);  // 隐藏启动贴图（center.png 全屏 overlay）
-        {
-            FILE* f = fopen("E:/workfold/20260509intergrate/calib_debug.log", "a");
-            if (f) { fprintf(f, "after setSceneData root children=%d\n", (int)m_3dView->root()->getNumChildren()); fclose(f); }
+        m_3dView->setCenterOverlayVisible(false);
+        m_3dView->setCameraManipulator(new osgGA::TrackballManipulator());
+        m_3dView->home();
+
+        // 创建分屏：左 OSGWidget(3D) + 右 CalibBoard2D(2D)
+        if (!m_calibSplitWidget) {
+            m_calibSplitWidget = new QWidget();
+            m_calibBoard2D = new calib_display::CalibBoard2D();
+
+            // 找到 3D 视图的父布局
+            auto* oldParent = m_3dView->parentWidget();
+            auto* oldLayout = oldParent ? oldParent->layout() : nullptr;
+
+            auto* splitLayout = new QHBoxLayout(m_calibSplitWidget);
+            splitLayout->setContentsMargins(0, 0, 0, 0);
+            splitLayout->setSpacing(0);
+
+            // 把 m_3dView 从原父控件移到分屏左侧
+            m_3dView->setParent(m_calibSplitWidget);
+            splitLayout->addWidget(m_3dView, 3);      // 左：3D 扫描仪
+            splitLayout->addWidget(m_calibBoard2D, 2); // 右：2D 标定板
+
+            // 替换原布局内容
+            if (oldLayout) {
+                // 清空原布局中的渐变条等
+                while (oldLayout->count() > 0) {
+                    auto* item = oldLayout->takeAt(0);
+                    if (item->widget()) item->widget()->setParent(m_3dViewArea);
+                }
+                oldLayout->addWidget(m_calibSplitWidget);
+            }
         }
-        // 固定相机视角：从 +Z 看向原点，up=+Y，禁用交互（不设 manipulator）
-        m_3dView->setCameraManipulator(nullptr);
-        m_3dView->viewer()->getCamera()->setViewMatrix(osg::Matrix::lookAt(
-            osg::Vec3(0.0f, 0.0f, 1000.0f),
-            osg::Vec3(0.0f, 0.0f, 0.0f),
-            osg::Vec3(0.0f, 1.0f, 0.0f)));
+        m_calibSplitWidget->show();
+        m_calibBoard2D->update();
+
         statusBar()->showMessage(QStringLiteral("标定显示模式"));
     }
 }
