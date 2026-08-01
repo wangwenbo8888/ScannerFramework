@@ -16,6 +16,8 @@
 
 #include <fstream>
 
+namespace Scanner::data { class PointCloudBuffer; }
+
 class OSGWidget : public QOpenGLWidget
 {
     Q_OBJECT
@@ -33,6 +35,9 @@ public:
                         const std::vector<osg::Vec4ub>& colors);
     bool loadTestData(int numPoints);
     bool loadTestDataFromPLY(const std::string& filepath, int numPoints);
+
+    // 从 PointCloudBuffer 直读快照（ADR7.8 只读窄接口）
+    void loadFromPointCloudBuffer(class Scanner::data::PointCloudBuffer* pcb);
     void clearScene();
 
     void setCameraManipulator(osgGA::CameraManipulator* manipulator);

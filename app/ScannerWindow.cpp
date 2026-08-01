@@ -1,4 +1,10 @@
 #include "ScannerWindow.h"
+#include "AppContext.h"
+#include "workflow/IWorkflow.h"
+#include "workflow/ScanWorkflow.h"
+#include "workflow/CalibrationWorkflow.h"
+#include "modules/06_device_control/HardwareMonitor.h"
+#include "service/StateMachine.h"
 
 #include <opencv2/imgproc.hpp>
 #include <spdlog/spdlog.h>
@@ -30,18 +36,29 @@ static QImage matToQImage(cv::Mat& mat)
 // ============================================================================
 // 构造 / 析构
 // ============================================================================
-ScannerWindow::ScannerWindow(QWidget *parent)
-    : QMainWindow(parent)
+Scanner::device::CameraControl* ScannerWindow::getCameraControl() {
+    return m_cam;
+}
+
+ScannerWindow::ScannerWindow(AppContext* appCtx, QWidget *parent)
+    : QMainWindow(parent), m_appCtx(appCtx)
 {
     ui.setupUi(this);
 
-    // 创建 CameraControl
-    Scanner::device::StereoPairConfig cfg;
-    cfg.deviceIndexLeft = 0;
-    cfg.deviceIndexRight = 1;
-    cfg.rotateRight180 = true;
-    cfg.defaultExposureMs = ui.horizontalSlider_ExposeTime->value();
-    m_cam = new Scanner::device::CameraControl(cfg);
+    // 从 AppContext 获取已装配的组件
+    if (m_appCtx) {
+        m_cam = m_appCtx->camera();
+        m_frameBuffer = m_appCtx->frameBuffer();
+    } else {
+        // 无 AppContext 时自建（兼容旧模式）
+        Scanner::device::StereoPairConfig cfg;
+        cfg.deviceIndexLeft = 0;
+        cfg.deviceIndexRight = 1;
+        cfg.rotateRight180 = true;
+        cfg.defaultExposureMs = ui.horizontalSlider_ExposeTime->value();
+        m_cam = new Scanner::device::CameraControl(cfg);
+        m_frameBuffer = new Scanner::data::FrameBuffer(60);
+    }
 
     // 连接按钮
     connect(ui.pushButton_OpenScannerCamera, &QPushButton::clicked, this, &ScannerWindow::onOpenScannerCamera);
@@ -60,6 +77,27 @@ ScannerWindow::ScannerWindow(QWidget *parent)
     connect(m_fpsTimer, &QTimer::timeout, this, &ScannerWindow::onTimeout);
     m_fpsTimer->start(1000);
 
+    // 帧显示定时器 — 从最新帧更新 UI（不消费 FrameBuffer）
+    m_consumerTimer = new QTimer(this);
+    connect(m_consumerTimer, &QTimer::timeout, this, [this]() {
+        cv::Mat left, right;
+        {
+            std::lock_guard lock(m_latestMutex);
+            if (m_latestLeft.empty()) return;
+            left = m_latestLeft;
+            right = m_latestRight;
+        }
+
+        cv::Mat leftReduced, rightReduced;
+        cv::resize(left, leftReduced, cv::Size(), 0.25, 0.25, cv::INTER_AREA);
+        cv::resize(right, rightReduced, cv::Size(), 0.25, 0.25, cv::INTER_AREA);
+
+        QImage leftImg = matToQImage(leftReduced);
+        QImage rightImg = matToQImage(rightReduced);
+        emit updateImages(leftImg, rightImg);
+    });
+    m_consumerTimer->start(33);
+
     // 图像更新信号
     connect(this, &ScannerWindow::updateImages, this, [this](QImage left, QImage right) {
         ui.label_LeftImage->setPixmap(QPixmap::fromImage(left).scaled(
@@ -71,14 +109,32 @@ ScannerWindow::ScannerWindow(QWidget *parent)
     // 打开串口
     openPorts();
 
+    // ScanWorkflow 进度回调
+    if (m_appCtx && m_appCtx->scanWorkflow()) {
+        m_appCtx->scanWorkflow()->setProgressCallback(
+            [this](const Scanner::workflow::WorkflowProgress& p) {
+                QMetaObject::invokeMethod(this, [this, p]() {
+                    ui.textEdit_Info->append(QString("[%1] %2%")
+                        .arg(QString::fromStdString(p.stageName))
+                        .arg(static_cast<int>(p.progress * 100)));
+                });
+            });
+    }
+
     ui.textEdit_Info->append("ScannerWindow 已就绪");
 }
 
 ScannerWindow::~ScannerWindow()
 {
-    if (m_cam) {
-        m_cam->stopAsyncCapture();
-        m_cam->close();
+    if (m_consumerTimer) m_consumerTimer->stop();
+    // AppContext 拥有的组件不在此销毁
+    if (!m_appCtx) {
+        if (m_cam) {
+            m_cam->stopAsyncCapture();
+            m_cam->close();
+            delete m_cam;
+        }
+        delete m_frameBuffer;
     }
     if (m_serialPort1 && m_serialPort1->isOpen()) m_serialPort1->close();
     if (m_serialPort2 && m_serialPort2->isOpen()) m_serialPort2->close();
@@ -199,6 +255,11 @@ void ScannerWindow::onOpenScannerCamera()
     auto r = m_cam->open();
     ui.textEdit_Info->append(r.success ? "扫描仪相机已打开" :
         QString("打开失败: %1").arg(QString::fromStdString(r.message)));
+
+    // 状态机: Init → DeviceReady
+    if (r.success && m_appCtx && m_appCtx->stateMachine()) {
+        m_appCtx->stateMachine()->transition(Scanner::EventType::DeviceConnected);
+    }
 }
 
 void ScannerWindow::onCloseScannerCamera()
@@ -208,6 +269,11 @@ void ScannerWindow::onCloseScannerCamera()
     auto r = m_cam->close();
     ui.textEdit_Info->append(r.success ? "扫描仪相机已关闭" :
         QString("关闭失败: %1").arg(QString::fromStdString(r.message)));
+
+    // 状态机: → Init
+    if (r.success && m_appCtx && m_appCtx->stateMachine()) {
+        m_appCtx->stateMachine()->transition(Scanner::EventType::DeviceDisconnected);
+    }
 }
 
 void ScannerWindow::onStartScanner()
@@ -226,33 +292,67 @@ void ScannerWindow::onStartScanner()
     sendData(m_serialPort1, startCmd);
     sendData(m_serialPort2, startCmd);
 
-    // 再启动相机采集
+    // 再启动相机采集 — 帧推入 FrameBuffer + 统计实际采集帧率
     auto r = m_cam->startAsyncCapture([this](const Scanner::hal::StereoFrame& frame) {
-        QMetaObject::invokeMethod(this, [this, frame]() {
-            if (frame.leftGray.empty() || frame.rightGray.empty()) return;
+        // 统计实际采集帧率
+        ++m_frameCount;
 
-            cv::Mat leftReduced, rightReduced;
-            cv::resize(frame.leftGray, leftReduced, cv::Size(), 0.25, 0.25, cv::INTER_AREA);
-            cv::resize(frame.rightGray, rightReduced, cv::Size(), 0.25, 0.25, cv::INTER_AREA);
+        // 存最新帧给 UI 显示
+        {
+            std::lock_guard lock(m_latestMutex);
+            m_latestLeft = frame.leftGray;
+            m_latestRight = frame.rightGray;
+        }
 
-            QImage leftImg = matToQImage(leftReduced);
-            QImage rightImg = matToQImage(rightReduced);
-            emit updateImages(leftImg, rightImg);
-
-            ++m_frameCount;
-        });
+        // 推入 FrameBuffer 供 ScanWorkflow 处理
+        Scanner::data::FrameData fd;
+        fd.frameId = frame.frameId;
+        fd.timestamp = frame.timestamp;
+        fd.leftGray = frame.leftGray;
+        fd.rightGray = frame.rightGray;
+        m_frameBuffer->pushFrame(fd);
     });
 
-    ui.textEdit_Info->append(r.success ?
-        QString("采集已启动 (曝光 %1 ms)").arg(expose) :
-        QString("启动失败: %1").arg(QString::fromStdString(r.message)));
+    if (!r.success) {
+        ui.textEdit_Info->append(QString("启动失败: %1").arg(QString::fromStdString(r.message)));
+        return;
+    }
+
+    // 启动 ScanWorkflow（处理管线: Capture→Preprocess→Marker→Laser→Fuse）
+    if (m_appCtx && m_appCtx->scanWorkflow()) {
+        m_appCtx->scanWorkflow()->initialize();
+        auto wfR = m_appCtx->scanWorkflow()->start();
+        ui.textEdit_Info->append(wfR.success ?
+            "扫描管线已启动" : QString("管线启动失败: %1").arg(QString::fromStdString(wfR.message)));
+    }
+
+    // 启动 HardwareMonitor（周期采集温度/帧率）
+    if (m_appCtx && m_appCtx->hwMonitor()) {
+        m_appCtx->hwMonitor()->setFrameCounter([this]() {
+            return static_cast<int>(m_currentFps);
+        });
+        m_appCtx->hwMonitor()->start(1000);
+    }
+
+    ui.textEdit_Info->append(QString("采集已启动 (曝光 %1 ms)").arg(expose));
 }
 
 void ScannerWindow::onStopScanner()
 {
     if (!m_cam) return;
 
-    // 先发送停止命令给下位机
+    // 先停止 ScanWorkflow
+    if (m_appCtx && m_appCtx->scanWorkflow()) {
+        m_appCtx->scanWorkflow()->stop();
+        ui.textEdit_Info->append("扫描管线已停止");
+    }
+
+    // 停止 HardwareMonitor
+    if (m_appCtx && m_appCtx->hwMonitor()) {
+        m_appCtx->hwMonitor()->stop();
+    }
+
+    // 发送停止命令给下位机
     QString stopCmd = buildStopCommand();
     ui.textEdit_Info->append(QString("发送下位机命令: %1").arg(stopCmd));
     sendData(m_serialPort1, stopCmd);
@@ -262,6 +362,46 @@ void ScannerWindow::onStopScanner()
     auto r = m_cam->stopAsyncCapture();
     ui.textEdit_Info->append(r.success ? "采集已停止" :
         QString("停止失败: %1").arg(QString::fromStdString(r.message)));
+}
+
+// ============================================================================
+// 标定
+// ============================================================================
+void ScannerWindow::onCalibrateClicked()
+{
+    if (!m_appCtx || !m_appCtx->calibWorkflow()) {
+        ui.textEdit_Info->append("标定工作流不可用");
+        return;
+    }
+    if (!m_cam || !m_cam->isOpen()) {
+        ui.textEdit_Info->append("请先打开相机");
+        return;
+    }
+
+    ui.textEdit_Info->append("开始标定流程...");
+    auto* calib = m_appCtx->calibWorkflow();
+    calib->initialize();
+    calib->setProgressCallback([this](const Scanner::workflow::WorkflowProgress& p) {
+        QMetaObject::invokeMethod(this, [this, p]() {
+            ui.textEdit_Info->append(QString("[标定] %1 (%2%)")
+                .arg(QString::fromStdString(p.stageName))
+                .arg(static_cast<int>(p.progress * 100)));
+        });
+    });
+
+    // 启动相机采集供标定使用
+    if (!m_cam->isCapturing()) {
+        m_cam->startAsyncCapture([this](const Scanner::hal::StereoFrame& frame) {
+            Scanner::data::FrameData fd;
+            fd.frameId = frame.frameId;
+            fd.timestamp = frame.timestamp;
+            fd.leftGray = frame.leftGray;
+            fd.rightGray = frame.rightGray;
+            m_frameBuffer->pushFrame(fd);
+        });
+    }
+
+    calib->start();
 }
 
 // ============================================================================

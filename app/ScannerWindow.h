@@ -12,16 +12,19 @@
 #include "ui_ScannerWindow.h"
 
 #include "modules/06_device_control/CameraControl.h"
+#include "data/FrameBuffer.h"
+
+class AppContext;
 
 class ScannerWindow : public QMainWindow
 {
     Q_OBJECT
 
 public:
-    explicit ScannerWindow(QWidget *parent = nullptr);
+    explicit ScannerWindow(AppContext* appCtx = nullptr, QWidget *parent = nullptr);
     ~ScannerWindow();
 
-    Scanner::device::CameraControl* getCameraControl() { return m_cam; }
+    Scanner::device::CameraControl* getCameraControl();
     uint64_t getFrameCount() const { return m_frameCount; }
     uint64_t getCurrentFps() const { return m_currentFps; }
 
@@ -30,6 +33,7 @@ private slots:
     void onCloseScannerCamera();
     void onStartScanner();
     void onStopScanner();
+    void onCalibrateClicked();
 
     void onSliderFreqChanged(int v);
     void onSliderBackgroundChanged(int v);
@@ -44,12 +48,20 @@ signals:
 private:
     Ui::LEADSCANSeriesClass ui;
 
+    AppContext* m_appCtx = nullptr;
     Scanner::device::CameraControl* m_cam = nullptr;
+    Scanner::data::FrameBuffer* m_frameBuffer = nullptr;
     QTimer* m_fpsTimer = nullptr;
+    QTimer* m_consumerTimer = nullptr;
 
     uint64_t m_frameCount = 0;
     uint64_t m_prevFrameCount = 0;
     uint64_t m_currentFps = 0;
+
+    // 最新帧（显示用，不消费 FrameBuffer）
+    cv::Mat m_latestLeft;
+    cv::Mat m_latestRight;
+    std::mutex m_latestMutex;
 
     // 串口
     QSerialPort* m_serialPort1 = nullptr;

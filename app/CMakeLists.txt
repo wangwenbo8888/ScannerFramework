@@ -4,6 +4,8 @@ set(CMAKE_AUTOUIC ON)
 
 set(APP_SOURCES
     main.cpp
+    AppContext.cpp
+    AppContext.h
     MainWindow.cpp
     MainWindow.h
     OSGWidget.cpp
@@ -33,9 +35,11 @@ target_include_directories(scan_demo PRIVATE
 
 target_link_libraries(scan_demo PRIVATE
     fw_common
+    fw_data
     fw_infra
     fw_workflow
     mod_device_control
+    mod_operatorlib
     Qt5::Widgets
     Qt5::OpenGL
     Qt5::Svg

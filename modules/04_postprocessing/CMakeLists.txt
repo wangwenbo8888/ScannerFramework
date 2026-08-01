@@ -1,1 +1,3 @@
-# Module 04_postprocessing — stub
+# Module 04_postprocessing — placeholder
+add_library(mod_postprocessing INTERFACE)
+

@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.24)
 
+# CMP0092: MSVC 不自动添加默认警告标志（防止 /W3→/W4 泄漏到 CUDA）
+if(POLICY CMP0092)
+    cmake_policy(SET CMP0092 NEW)
+endif()
+
 project(ScannerFramework VERSION 1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -57,10 +62,43 @@ endif()
 # OpenCV
 # ============================================================================
 set(OpenCV_DIR "F:/opencv4.13/install/x64/vc17/lib" CACHE PATH "OpenCV")
+cmake_policy(SET CMP0146 OLD)
 find_package(OpenCV 4.13 REQUIRED COMPONENTS core calib3d imgproc imgcodecs)
 
+# 自定义 INTERFACE 库包装 OpenCV（解决 CMake 3.31 + OpenCV CUDA 策略冲突）
+set(_OcvDir "${OpenCV_DIR}")
+add_library(ScannerCV INTERFACE)
+target_include_directories(ScannerCV INTERFACE ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(ScannerCV INTERFACE
+    $<$<CONFIG:Debug>:${_OcvDir}/opencv_flann4130d.lib>$<$<NOT:$<CONFIG:Debug>>:${_OcvDir}/opencv_flann4130.lib>
+    $<$<CONFIG:Debug>:${_OcvDir}/opencv_core4130d.lib>$<$<NOT:$<CONFIG:Debug>>:${_OcvDir}/opencv_core4130.lib>
+    $<$<CONFIG:Debug>:${_OcvDir}/opencv_imgproc4130d.lib>$<$<NOT:$<CONFIG:Debug>>:${_OcvDir}/opencv_imgproc4130.lib>
+    $<$<CONFIG:Debug>:${_OcvDir}/opencv_features2d4130d.lib>$<$<NOT:$<CONFIG:Debug>>:${_OcvDir}/opencv_features2d4130.lib>
+    $<$<CONFIG:Debug>:${_OcvDir}/opencv_calib3d4130d.lib>$<$<NOT:$<CONFIG:Debug>>:${_OcvDir}/opencv_calib3d4130.lib>
+    $<$<CONFIG:Debug>:${_OcvDir}/opencv_imgcodecs4130d.lib>$<$<NOT:$<CONFIG:Debug>>:${_OcvDir}/opencv_imgcodecs4130.lib>
+    $<$<CONFIG:Debug>:${_OcvDir}/opencv_cudev4130d.lib>$<$<NOT:$<CONFIG:Debug>>:${_OcvDir}/opencv_cudev4130.lib>
+)
+set(OpenCV_LIBS ScannerCV)
+
+# ============================================================================
+# CUDA
+# ============================================================================
+option(ENABLE_CUDA "Enable CUDA support" ON)
 if(ENABLE_CUDA)
+    set(BUILD_CUDA ON CACHE BOOL "Build CUDA operators" FORCE)
+    set(CMAKE_CUDA_ARCHITECTURES 89)
+    set(CMAKE_CUDA_STANDARD 17)
+    set(CMAKE_CUDA_DEPENDENCIES_USE_COMPILER OFF)
+    string(APPEND CMAKE_CUDA_FLAGS " --extended-lambda -Xcompiler=/utf-8 -DFMT_UNICODE=0")
+    enable_language(CUDA)
     find_package(CUDAToolkit 12.6 REQUIRED)
+    # OpenCV CUDA 模块
+    target_link_libraries(ScannerCV INTERFACE
+        $<$<CONFIG:Debug>:${_OcvDir}/opencv_cudaarithm4130d.lib>$<$<NOT:$<CONFIG:Debug>>:${_OcvDir}/opencv_cudaarithm4130.lib>
+        $<$<CONFIG:Debug>:${_OcvDir}/opencv_cudawarping4130d.lib>$<$<NOT:$<CONFIG:Debug>>:${_OcvDir}/opencv_cudawarping4130.lib>
+        $<$<CONFIG:Debug>:${_OcvDir}/opencv_cudaimgproc4130d.lib>$<$<NOT:$<CONFIG:Debug>>:${_OcvDir}/opencv_cudaimgproc4130.lib>
+    )
+    message(STATUS "CUDA enabled: ${CUDAToolkit_VERSION} arch=${CMAKE_CUDA_ARCHITECTURES}")
 endif()
 
 # ============================================================================
@@ -117,6 +155,11 @@ configure_file(
 # ============================================================================
 # 子目录 — 按层构建
 # ============================================================================
+# OpenCV Debug 构建 ABI：同时定义 _DEBUG 和 DEBUG 确保 debug_build_guard 生效
+if(MSVC)
+    add_compile_definitions($<$<CONFIG:Debug>:DEBUG>)
+endif()
+
 add_subdirectory(framework)
 
 # ============================================================================

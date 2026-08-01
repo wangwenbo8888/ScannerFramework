@@ -142,6 +142,9 @@ enum class EventType : uint16_t {
     SessionStopped = 0x0501,
     SessionSaved = 0x0502,
 
+    // 状态
+    StateChanged = 0x0600,
+
     // 用户自定义起点
     UserDefined = 0x1000
 };

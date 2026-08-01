@@ -1,4 +1,7 @@
 ﻿#include "MainWindow.h"
+#include "AppContext.h"
+#include "data/DeviceStateCache.h"
+#include "data/PointCloudBuffer.h"
 #include "CalibDialog.h"
 #include "CalibDisplay.h"
 #include "IntegrateTestDialog.h"
@@ -89,7 +92,7 @@ void ArrowSlider::paintEvent(QPaintEvent *event)
     p.drawPolygon(arrow);
 }
 
-MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
+MainWindow::MainWindow(AppContext* appCtx, QWidget *parent) : QMainWindow(parent), m_appCtx(appCtx)
 {
     setObjectName("mainWindow");
     setWindowTitle(QStringLiteral("LeadScan K2"));
@@ -127,7 +130,7 @@ MainWindow::~MainWindow() {}
 void MainWindow::onIntegrateTestClicked()
 {
     if (!m_integrateTestDialog) {
-        auto* dlg = new ScannerWindow(this);
+        auto* dlg = new ScannerWindow(m_appCtx, this);
         m_integrateTestDialog = dlg;
     }
     m_integrateTestDialog->show();
@@ -1185,54 +1188,115 @@ void MainWindow::startInfoTimer()
     m_infoTimer = new QTimer(this);
     connect(m_infoTimer, &QTimer::timeout, this, &MainWindow::updateInfoSection);
     m_infoTimer->start(1000);
+
+    // 3D 视图定时刷新（从 PointCloudBuffer 直读快照）
+    QTimer* cloudTimer = new QTimer(this);
+    connect(cloudTimer, &QTimer::timeout, this, [this]() {
+        if (!m_appCtx || !m_3dView) return;
+        auto* pcb = m_appCtx->pointCloudBuffer();
+        if (!pcb || pcb->getTotalPointCount() == 0) return;
+        static int lastCount = 0;
+        int curCount = pcb->getTotalPointCount();
+        if (curCount != lastCount) {
+            m_3dView->loadFromPointCloudBuffer(pcb);
+            lastCount = curCount;
+            if (m_cloudItem001)
+                m_cloudItem001->setText(0, QStringLiteral("点云数据 001 (%1)").arg(curCount));
+        }
+    });
+    cloudTimer->start(500);
 }
 
 void MainWindow::updateInfoSection()
 {
-    // 1. 连接状态
-    if (m_infoConnLabel) {
-        bool camOpen = false;
-        auto* scannerWin = qobject_cast<ScannerWindow*>(m_integrateTestDialog);
-        if (scannerWin && scannerWin->getCameraControl()) {
-            camOpen = scannerWin->getCameraControl()->isOpen();
+    static int updateCount = 0;
+    ++updateCount;
+
+    // === 先更新 CPU 和内存（纯 Windows API，不依赖任何框架组件）===
+    if (m_infoCpuLabel) {
+        FILETIME idleTime, kernelTime, userTime;
+        if (GetSystemTimes(&idleTime, &kernelTime, &userTime)) {
+            auto toU64 = [](const FILETIME& ft) -> uint64_t {
+                ULARGE_INTEGER u; u.LowPart = ft.dwLowDateTime; u.HighPart = ft.dwHighDateTime;
+                return u.QuadPart;
+            };
+            double idle = static_cast<double>(toU64(idleTime));
+            double kernel = static_cast<double>(toU64(kernelTime));
+            double user = static_cast<double>(toU64(userTime));
+            double idleDiff = idle - m_prevCpuIdle;
+            double total = (kernel - m_prevCpuKernel) + (user - m_prevCpuUser);
+            m_prevCpuIdle = idle; m_prevCpuKernel = kernel; m_prevCpuUser = user;
+            double usage = (total > 0) ? ((total - idleDiff) / total * 100.0) : 0.0;
+            if (usage < 0) usage = 0; if (usage > 100) usage = 100;
+            m_infoCpuLabel->setText(QString::number(usage, 'f', 1) + " %");
         }
-        m_infoConnLabel->setText(camOpen ? "已连接" : "未连接");
-        m_infoConnLabel->setStyleSheet(camOpen ? "color: #00AA00;" : "color: #CC0000;");
     }
 
-    // 2. 点云数量（暂无扫描管线，显示 0）
+    if (m_infoMemLabel) {
+        MEMORYSTATUSEX mem;
+        mem.dwLength = sizeof(mem);
+        if (GlobalMemoryStatusEx(&mem)) {
+            double totalGB = static_cast<double>(mem.ullTotalPhys) / (1024.0 * 1024.0 * 1024.0);
+            double usedGB = totalGB - static_cast<double>(mem.ullAvailPhys) / (1024.0 * 1024.0 * 1024.0);
+            m_infoMemLabel->setText(QString("%1 / %2 GB (#%3)")
+                .arg(usedGB, 0, 'f', 1).arg(totalGB, 0, 'f', 1).arg(updateCount));
+        }
+    }
+
+    // === 再更新设备相关状态 ===
+    Scanner::data::DeviceStateCache* dsc = nullptr;
+    Scanner::data::PointCloudBuffer* pcb = nullptr;
+    if (m_appCtx) {
+        dsc = m_appCtx->deviceStateCache();
+        pcb = m_appCtx->pointCloudBuffer();
+    }
+
+    // 1. 连接状态 — 从 DeviceStateCache 读
+    if (m_infoConnLabel) {
+        bool camConnected = false;
+        if (dsc) {
+            auto camState = dsc->getState("Camera");
+            camConnected = (camState.state == Scanner::DeviceState::Connected ||
+                            camState.state == Scanner::DeviceState::Streaming);
+        }
+        m_infoConnLabel->setText(camConnected ? "已连接" : "未连接");
+        m_infoConnLabel->setStyleSheet(camConnected ? "color: #00AA00;" : "color: #CC0000;");
+    }
+
+    // 2. 点云数量 — 从 PointCloudBuffer 读
     if (m_infoPointCloudLabel) {
-        m_infoPointCloudLabel->setText("0");
+        int count = pcb ? pcb->getTotalPointCount() : 0;
+        m_infoPointCloudLabel->setText(QString::number(count));
     }
 
-    // 3. 帧率 — 从 ScannerWindow 获取
+    // 3. 帧率 — 从 DeviceStateCache 或 FrameBuffer 水位
     if (m_infoFpsLabel) {
-        auto* scannerWin = qobject_cast<ScannerWindow*>(m_integrateTestDialog);
-        if (scannerWin && scannerWin->getCameraControl() && scannerWin->getCameraControl()->isOpen()) {
-            uint64_t fps = scannerWin->getCurrentFps();
-            m_infoFpsLabel->setText(QString::number(fps) + " fps");
+        double fps = dsc ? dsc->getFps("Camera") : 0.0;
+        if (fps > 0.0) {
+            m_infoFpsLabel->setText(QString::number(static_cast<int>(fps)) + " fps");
+        } else if (m_appCtx && m_appCtx->frameBuffer()) {
+            // 回退: 用 FrameBuffer 水位推算
+            int level = m_appCtx->frameBuffer()->getBufferLevel();
+            m_infoFpsLabel->setText(level > 0 ? QString::number(level) + " f" : "-- fps");
         } else {
             m_infoFpsLabel->setText("-- fps");
         }
     }
 
-    // 4. 设备温度 — 从 CameraControl 获取
+    // 4. 设备温度 — 从 DeviceStateCache 读（HardwareMonitor 写入）
     if (m_infoTempLabel) {
-        auto* scannerWin = qobject_cast<ScannerWindow*>(m_integrateTestDialog);
-        if (scannerWin && scannerWin->getCameraControl() && scannerWin->getCameraControl()->isOpen()) {
-            double temp = scannerWin->getCameraControl()->getTemperature();
-            if (temp > 0.0) {
-                m_infoTempLabel->setText(QString::number(temp, 'f', 1) + " ℃");
-                m_infoTempLabel->setStyleSheet(temp > 50.0 ? "color: #DDAA00;" : "");
-            } else {
-                m_infoTempLabel->setText("-- ℃");
-            }
+        double camTemp = dsc ? dsc->getTemperature("Camera") : 0.0;
+        double mcuTemp = dsc ? dsc->getTemperature("MCU") : 0.0;
+        double temp = std::max(camTemp, mcuTemp);
+        if (temp > 0.0) {
+            m_infoTempLabel->setText(QString::number(temp, 'f', 1) + " ℃");
+            m_infoTempLabel->setStyleSheet(temp > 50.0 ? "color: #DDAA00;" : "");
         } else {
             m_infoTempLabel->setText("-- ℃");
         }
     }
 
-    // 5. CPU 占用率
+    // 5. CPU 占用率 — Windows API
     if (m_infoCpuLabel) {
         FILETIME idleTime, kernelTime, userTime;
         if (GetSystemTimes(&idleTime, &kernelTime, &userTime)) {
@@ -1271,8 +1335,10 @@ void MainWindow::updateInfoSection()
         if (GlobalMemoryStatusEx(&mem)) {
             double totalGB = static_cast<double>(mem.ullTotalPhys) / (1024.0 * 1024.0 * 1024.0);
             double usedGB = totalGB - static_cast<double>(mem.ullAvailPhys) / (1024.0 * 1024.0 * 1024.0);
-            m_infoMemLabel->setText(QString::number(usedGB, 'f', 1) + " / " +
-                                    QString::number(totalGB, 'f', 1) + " GB");
+            m_infoMemLabel->setText(QString("%1 / %2 GB (#%3)")
+                .arg(usedGB, 0, 'f', 1)
+                .arg(totalGB, 0, 'f', 1)
+                .arg(updateCount));
         } else {
             m_infoMemLabel->setText("-- / -- GB");
         }

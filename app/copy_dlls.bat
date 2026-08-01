@@ -19,8 +19,8 @@ for %%D in (osg161-osg osg161-osgDB osg161-osgGA osg161-osgUtil osg161-osgViewer
     copy /Y "%OSG_BIN%\%%Dd.dll" "%DEST%\" >nul 2>&1
 )
 
-REM === OpenCV DLLs ===
-for %%D in (opencv_core4130 opencv_calib3d4130 opencv_imgproc4130 opencv_imgcodecs4130) do (
+REM === OpenCV DLLs (core + calib3d deps + CUDA) ===
+for %%D in (opencv_core4130 opencv_calib3d4130 opencv_imgproc4130 opencv_imgcodecs4130 opencv_features2d4130 opencv_flann4130 opencv_cudaarithm4130 opencv_cudawarping4130 opencv_cudaimgproc4130 opencv_cudev4130) do (
     copy /Y "%OPENCV_BIN%\%%D.dll" "%DEST%\" >nul 2>&1
     copy /Y "%OPENCV_BIN%\%%Dd.dll" "%DEST%\" >nul 2>&1
 )

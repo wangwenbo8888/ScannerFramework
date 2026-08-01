@@ -1,4 +1,5 @@
 #include "OSGWidget.h"
+#include "data/PointCloudBuffer.h"
 
 #include <osg/Geode>
 #include <osg/Geometry>
@@ -248,6 +249,37 @@ void OSGWidget::loadPointCloud(const std::vector<osg::Vec3>& points,
 
     if (m_viewer.valid() && m_viewer->getCameraManipulator())
         m_viewer->getCameraManipulator()->home(0);
+}
+
+// ============================================================================
+// 从 PointCloudBuffer 直读快照（ADR7.8）
+// ============================================================================
+void OSGWidget::loadFromPointCloudBuffer(Scanner::data::PointCloudBuffer* pcb) {
+    if (!pcb) return;
+
+    uint64_t version = 0;
+    std::vector<cv::Point3f> points;
+    std::vector<cv::Vec3b> colors;
+    pcb->getSnapshot(version, points, colors);
+
+    if (points.empty()) return;
+
+    clearScene();
+
+    std::vector<osg::Vec3> osgPoints;
+    osgPoints.reserve(points.size());
+    for (const auto& p : points)
+        osgPoints.emplace_back(p.x, p.y, p.z);
+
+    if (!colors.empty()) {
+        std::vector<osg::Vec4ub> osgColors;
+        osgColors.reserve(colors.size());
+        for (const auto& c : colors)
+            osgColors.emplace_back(c[0], c[1], c[2], 255);
+        loadPointCloud(osgPoints, osgColors);
+    } else {
+        loadPointCloud(osgPoints);
+    }
 }
 
 bool OSGWidget::loadTestData(int numPoints)

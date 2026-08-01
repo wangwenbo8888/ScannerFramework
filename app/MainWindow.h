@@ -32,14 +32,17 @@ private:
 class CalibDialog;
 class CameraControl;
 class LEADSCANSeries;
+class AppContext;
 
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
 
 public:
-    explicit MainWindow(QWidget *parent = nullptr);
+    explicit MainWindow(AppContext* appCtx = nullptr, QWidget *parent = nullptr);
     ~MainWindow();
+
+    AppContext* appCtx() { return m_appCtx; }
 
 private:
     QWidget *createTitleBar();
@@ -90,6 +93,8 @@ protected:
     QTreeWidget *m_projectTree;
     QTreeWidgetItem *m_cloudItem001;
     QWidget *m_floatingToolbar;
+
+    AppContext *m_appCtx = nullptr;
 
     QWidget *m_integrateTestDialog;
     CalibDialog *m_calibDialog;
