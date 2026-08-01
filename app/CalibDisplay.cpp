@@ -372,8 +372,9 @@ osg::Group* buildCalibScene(const std::string& stlPath)
 
     // 扫描仪组：缩放 + 向左偏移
     auto* scanGroup = new osg::MatrixTransform;
-    scanGroup->setMatrix(osg::Matrix::translate(-400.0f, 0.0f, 0.0f) *
-                         osg::Matrix::scale(0.6f, 0.6f, 0.6f));
+    scanGroup->setMatrix(osg::Matrix::translate(0.0f, 250.0f, 0.0f) *
+                         osg::Matrix::rotate(osg::DegreesToRadians(90.0f), osg::Vec3(0, 0, 1)) *
+                         osg::Matrix::scale(0.9f, 0.9f, 0.9f));
     {
         auto* target = createPoseModel(stlPath, 0, 1, 0);   // 绿
         if (target)  scanGroup->addChild(target);
