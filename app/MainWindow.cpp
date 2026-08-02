@@ -512,14 +512,14 @@ void MainWindow::createFloatingToolbar()
 
 void MainWindow::repositionFloatingToolbar()
 {
-    if (!m_floatingToolbar || !m_3dView) return;
+    if (!m_floatingToolbar || !m_3dViewArea) return;
     if (!m_floatingToolbar->isVisible()) return;
-    if (!m_floatingToolbar->isVisible()) return;  // 已隐藏则不处理
     m_floatingToolbar->adjustSize();
-    QRect viewGeo = m_3dView->geometry();
-    QPoint viewBottomCenter = m_3dView->mapToGlobal(QPoint(viewGeo.width() / 2, viewGeo.height()));
-    int tbX = viewBottomCenter.x() - m_floatingToolbar->width() / 2;
-    int tbY = viewBottomCenter.y() - m_floatingToolbar->height() - 10;
+    // 基于整个显示窗口(view3DArea)居中，而不是只基于 m_3dView
+    QRect areaGeo = m_3dViewArea->geometry();
+    QPoint areaBottomCenter = m_3dViewArea->mapToGlobal(QPoint(areaGeo.width() / 2, areaGeo.height()));
+    int tbX = areaBottomCenter.x() - m_floatingToolbar->width() / 2;
+    int tbY = areaBottomCenter.y() - m_floatingToolbar->height() - 10;
     m_floatingToolbar->move(tbX, tbY);
 }
 
@@ -788,6 +788,7 @@ QWidget *MainWindow::createToolBar()
                 if (m_floatingToolbar) {
                     m_floatingToolbar->setVisible(true);
                     m_floatingToolbar->show();
+                    repositionFloatingToolbar();
                 }
             });
         }
