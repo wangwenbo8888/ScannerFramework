@@ -19,6 +19,7 @@
 #include <osg/BoundingBox>
 #include <osg/BoundingSphere>
 #include <osg/CopyOp>
+#include <osg/LightModel>
 #include <osgText/Text>
 #include <osgDB/ReadFile>
 #include <osgDB/Registry>
@@ -225,7 +226,10 @@ static osg::Geode* loadStlManual(const std::string& path)
         verts->push_back(osg::Vec3(v[0], v[1], v[2]));
         verts->push_back(osg::Vec3(v[3], v[4], v[5]));
         verts->push_back(osg::Vec3(v[6], v[7], v[8]));
-        for (int k = 0; k < 3; ++k) norms->push_back(osg::Vec3(n[0], n[1], n[2]));
+        osg::Vec3 p0(v[0],v[1],v[2]), p1(v[3],v[4],v[5]), p2(v[6],v[7],v[8]);
+        osg::Vec3 nm = (p1 - p0) ^ (p2 - p0);   // 叉积重算法线
+        nm.normalize();
+        for (int k = 0; k < 3; ++k) norms->push_back(nm);
     }
     fclose(f);
 
@@ -235,6 +239,21 @@ static osg::Geode* loadStlManual(const std::string& path)
     geom->setNormalArray(norms);
     geom->setNormalBinding(osg::Geometry::BIND_PER_VERTEX);
     geom->addPrimitiveSet(new osg::DrawArrays(osg::PrimitiveSet::TRIANGLES, 0, (int)verts->size()));
+
+    // 第1项：LeadScan 式光照（叉积法线 + GL_LIGHTING + GL_LIGHT0 + twoSided + Material）
+    osg::ref_ptr<osg::StateSet> ss = geom->getOrCreateStateSet();
+    ss->setMode(GL_NORMALIZE, osg::StateAttribute::ON);
+    ss->setMode(GL_LIGHTING, osg::StateAttribute::ON);
+    ss->setMode(GL_LIGHT0, osg::StateAttribute::ON);
+    osg::ref_ptr<osg::LightModel> lightModel = new osg::LightModel;
+    lightModel->setTwoSided(true);
+    ss->setAttributeAndModes(lightModel.get());
+    osg::ref_ptr<osg::Material> mat = new osg::Material;
+    mat->setDiffuse(osg::Material::FRONT_AND_BACK, osg::Vec4(0.75f, 0.75f, 0.75f, 1.0f));
+    mat->setAmbient(osg::Material::FRONT_AND_BACK, osg::Vec4(0.75f, 0.75f, 0.75f, 1.0f));
+    mat->setSpecular(osg::Material::FRONT_AND_BACK, osg::Vec4(0.3f, 0.3f, 0.3f, 1.0f));
+    mat->setShininess(osg::Material::FRONT_AND_BACK, 100.0f);
+    ss->setAttributeAndModes(mat.get(), osg::StateAttribute::ON);
 
     osg::ref_ptr<osg::Geode> geode = new osg::Geode;
     geode->addDrawable(geom);
@@ -269,10 +288,9 @@ static osg::MatrixTransform* createPoseModel(const std::string& stlPath,
     xform->addChild(child);
 
     osg::StateSet* ss = xform->getOrCreateStateSet();
-    ss->setMode(GL_CULL_FACE, osg::StateAttribute::OFF);
-    ss->setMode(GL_LIGHTING, osg::StateAttribute::OFF);
-    ss->setMode(GL_BLEND, osg::StateAttribute::ON);
-    ss->setRenderingHint(osg::StateSet::TRANSPARENT_BIN);
+    ss->setMode(GL_CULL_FACE, osg::StateAttribute::OFF);     // 撤掉剔除（避免嵌套组件 z-fighting）
+    ss->setMode(GL_BLEND, osg::StateAttribute::OFF);        // 第2项：不透明（恢复深度写入）
+    ss->setRenderingHint(osg::StateSet::OPAQUE_BIN);
     return xform;
 }
 

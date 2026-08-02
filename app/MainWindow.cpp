@@ -265,7 +265,7 @@ void MainWindow::onCalibDeviceClicked()
         }
 
         // 加载扫描仪 STL 到 3D 视图
-        std::string stlTarget = "E:/workfold/framework/build/JEAMMSCAN.stl";
+        std::string stlTarget = "E:/workfold/framework/build/JEAMMSCAN_clean.stl";
         osg::ref_ptr<osg::Group> scene = calib_display::buildCalibScene(stlTarget);
         m_3dView->setSceneData(scene);
         m_3dView->setCenterOverlayVisible(false);
@@ -280,6 +280,11 @@ void MainWindow::onCalibDeviceClicked()
         );
         m_3dView->setCameraManipulator(manip);
         manip->home(0);
+        // 固定模型：锁定视角（禁止旋转和缩放）
+        m_3dView->viewer()->frame();
+        osg::Matrix lockedView = m_3dView->viewer()->getCamera()->getViewMatrix();
+        m_3dView->setCameraManipulator(nullptr);
+        m_3dView->viewer()->getCamera()->setViewMatrix(lockedView);
 
         // 创建 2D 标定板，加入 3D 视图布局（各占一半）
         if (!m_calibBoard2D) {
