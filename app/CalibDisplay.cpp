@@ -246,7 +246,7 @@ static osg::Geode* loadStlManual(const std::string& path)
     ss->setMode(GL_LIGHTING, osg::StateAttribute::ON);
     ss->setMode(GL_LIGHT0, osg::StateAttribute::ON);
     osg::ref_ptr<osg::LightModel> lightModel = new osg::LightModel;
-    lightModel->setTwoSided(false);  // 单面光照：内表面不亮，减少透过开口看到内部的视觉影响
+    lightModel->setTwoSided(true);  // 双面光照：翻转绕序后内表面法线朝里，需要twoSided才亮
     ss->setAttributeAndModes(lightModel.get());
     osg::ref_ptr<osg::Material> mat = new osg::Material;
     mat->setDiffuse(osg::Material::FRONT_AND_BACK, osg::Vec4(0.75f, 0.75f, 0.75f, 1.0f));
@@ -288,8 +288,9 @@ static osg::MatrixTransform* createPoseModel(const std::string& stlPath,
     xform->addChild(child);
 
     osg::StateSet* ss = xform->getOrCreateStateSet();
-    ss->setMode(GL_CULL_FACE, osg::StateAttribute::ON);      // 只渲染外表面（单壳模型，不再有嵌套组件问题）
-    ss->setMode(GL_BLEND, osg::StateAttribute::OFF);        // 第2项：不透明（恢复深度写入）
+    ss->setMode(GL_CULL_FACE, osg::StateAttribute::OFF);     // 不剔除，靠深度缓冲遮挡
+    ss->setMode(GL_DEPTH_TEST, osg::StateAttribute::ON);     // 显式开启深度测试
+    ss->setMode(GL_BLEND, osg::StateAttribute::OFF);        // 不透明
     ss->setRenderingHint(osg::StateSet::OPAQUE_BIN);
     return xform;
 }
