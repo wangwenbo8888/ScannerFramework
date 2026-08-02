@@ -280,11 +280,6 @@ void MainWindow::onCalibDeviceClicked()
         );
         m_3dView->setCameraManipulator(manip);
         manip->home(0);
-        // 等 OSG 应用视角后锁定
-        m_3dView->viewer()->frame();
-        osg::Matrix lockedView = m_3dView->viewer()->getCamera()->getViewMatrix();
-        m_3dView->setCameraManipulator(nullptr);
-        m_3dView->viewer()->getCamera()->setViewMatrix(lockedView);
 
         // 创建 2D 标定板，加入 3D 视图布局（各占一半）
         if (!m_calibBoard2D) {
