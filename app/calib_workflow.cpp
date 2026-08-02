@@ -5,62 +5,29 @@
 #include "stereo_rectify_cpu.h"
 #include "stereo_rectify_temp_table_cpu.h"
 
-#include <opencv2/calib3d.hpp>
-#include <opencv2/imgproc.hpp>
 #include <nlohmann/json.hpp>
 #include <fstream>
-#include <cstdio>
 
 namespace calibration {
 
 // ============================================================================
-// 辅助：从图像检测棋盘格角点
-// ============================================================================
-static bool detectCorners(
-    const std::vector<cv::Mat>& images,
-    cv::Size patternSize,
-    std::vector<std::vector<cv::Point2f>>& allCorners)
-{
-    allCorners.clear();
-    allCorners.reserve(images.size());
-
-    for (size_t i = 0; i < images.size(); ++i) {
-        if (images[i].empty()) continue;
-
-        cv::Mat gray;
-        if (images[i].channels() == 3)
-            cv::cvtColor(images[i], gray, cv::COLOR_BGR2GRAY);
-        else
-            gray = images[i];
-
-        std::vector<cv::Point2f> corners;
-        bool found = cv::findChessboardCorners(gray, patternSize, corners,
-            cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE);
-
-        if (found) {
-            cv::cornerSubPix(gray, corners, cv::Size(11, 11), cv::Size(-1, -1),
-                cv::TermCriteria(cv::TermCriteria::EPS + cv::TermCriteria::COUNT, 30, 0.01));
-            allCorners.push_back(std::move(corners));
-        }
-    }
-    return !allCorners.empty();
-}
-
-// ============================================================================
 // 辅助：生成棋盘格世界坐标
 // ============================================================================
-static std::vector<cv::Point3f> generateObjectPoints(
-    cv::Size patternSize, double squareSize)
+static std::vector<cv::Point3f> generateObjectPoints()
 {
     std::vector<cv::Point3f> pts;
-    for (int r = 0; r < patternSize.height; ++r)
-        for (int c = 0; c < patternSize.width; ++c)
-            pts.emplace_back(c * squareSize, r * squareSize, 0.0f);
+    for (int r = 0; r < CHESSBOARD_ROWS; ++r)
+        for (int c = 0; c < CHESSBOARD_COLS; ++c)
+            pts.emplace_back(
+                static_cast<float>(c * CHESSBOARD_SQUARE_MM),
+                static_cast<float>(r * CHESSBOARD_SQUARE_MM),
+                0.0f);
     return pts;
 }
 
 // ============================================================================
-// 完整相机标定流程
+// 完整相机标定流程（内参→外参→矫正）
+// 输入：采集阶段已检测的角点
 // ============================================================================
 CameraCalibResult runCameraCalibration(
     const CameraCalibInput& input,
@@ -71,48 +38,35 @@ CameraCalibResult runCameraCalibration(
         if (progress) progress(pct, step);
     };
 
-    cv::Size patternSize(input.chessboardCols, input.chessboardRows);
+    // 角点数量检查
+    int n = std::min(input.leftCorners.size(), input.rightCorners.size());
+    if (n < 5) {
+        result.message = "valid frames < 5: " + std::to_string(n);
+        return result;
+    }
+    result.validFrameCount = n;
+
+    cv::Size patternSize(CHESSBOARD_COLS, CHESSBOARD_ROWS);
     cv::Size imageSize(input.imageWidth, input.imageHeight);
+    auto objectPoints = generateObjectPoints();
 
-    // ===== 1. 检测角点 =====
-    report(5, "\xe8\xa7\x92\xe7\x82\xb9\xe6\xa3\x80\xe6\xb5\x8b\xe4\xb8\xad...");  // 角点检测中...
-
-    std::vector<std::vector<cv::Point2f>> leftCorners, rightCorners;
-    if (!detectCorners(input.leftImages, patternSize, leftCorners) ||
-        !detectCorners(input.rightImages, patternSize, rightCorners))
-    {
-        result.message = "\xe6\xa3\x8b\xe7\x9b\x98\xe6\xa0\xbc\xe8\xa7\x92\xe7\x82\xb9\xe6\xa3\x80\xe6\xb5\x8b\xe5\xa4\xb1\xe8\xb4\xa5";  // 棋盘格角点检测失败
-        return result;
-    }
-
-    int validFrames = std::min(leftCorners.size(), rightCorners.size());
-    if (validFrames < 5) {
-        result.message = "\xe6\x9c\x89\xe6\x95\x88\xe5\xb8\xa7\xe6\x95\xb0\xe4\xb8\x8d\xe8\xb6\xb3: " + std::to_string(validFrames);  // 有效帧数不足
-        return result;
-    }
-    leftCorners.resize(validFrames);
-    rightCorners.resize(validFrames);
-    result.validFrameCount = validFrames;
-
-    report(15, "\xe8\xa7\x92\xe7\x82\xb9\xe6\xa3\x80\xe6\xb5\x8b\xe5\xae\x8c\xe6\x88\x90: " + std::to_string(validFrames) + " \xe5\xb8\xa7");
-
-    // ===== 2. 内参标定 =====
-    report(20, "\xe5\x86\x85\xe5\x8f\x82\xe6\xa0\x87\xe5\xae\x9a\xe4\xb8\xad...");  // 内参标定中...
+    // ===== 1. 内参标定 =====
+    report(10, "intrinsic calibration...");
 
     calib::IntrinsicCalibParams intrinsicParams;
-    intrinsicParams.chessboard_width = input.chessboardCols;
-    intrinsicParams.chessboard_height = input.chessboardRows;
-    intrinsicParams.square_size_mm = input.squareSizeMM;
+    intrinsicParams.chessboard_width = CHESSBOARD_COLS;
+    intrinsicParams.chessboard_height = CHESSBOARD_ROWS;
+    intrinsicParams.square_size_mm = CHESSBOARD_SQUARE_MM;
     intrinsicParams.image_width = input.imageWidth;
     intrinsicParams.image_height = input.imageHeight;
 
     calib::IntrinsicCalibCPU intrinsicCalib(intrinsicParams);
     calib::IntrinsicCalibResult intrinsicResult;
 
-    if (!intrinsicCalib.Execute(leftCorners, rightCorners, intrinsicResult) ||
+    if (!intrinsicCalib.Execute(input.leftCorners, input.rightCorners, intrinsicResult) ||
         !intrinsicResult.success)
     {
-        result.message = intrinsicResult.message;
+        result.message = "intrinsic failed: " + intrinsicResult.message;
         return result;
     }
 
@@ -122,20 +76,18 @@ CameraCalibResult runCameraCalibration(
     result.distCoeffsR = intrinsicResult.right.dist_coeffs.clone();
     result.intrinsicRMS = intrinsicResult.reproj_error_mean;
 
-    report(50, "\xe5\x86\x85\xe5\x8f\x82\xe6\xa0\x87\xe5\xae\x9a\xe5\xae\x8c\xe6\x88\x90 RMS=" + std::to_string(result.intrinsicRMS));
+    report(40, "intrinsic done, RMS=" + std::to_string(result.intrinsicRMS));
 
-    // ===== 3. 外参标定 =====
-    report(55, "\xe5\xa4\x96\xe5\x8f\x82\xe6\xa0\x87\xe5\xae\x9a\xe4\xb8\xad...");  // 外参标定中...
-
-    auto objectPoints = generateObjectPoints(patternSize, input.squareSizeMM);
+    // ===== 2. 外参标定 =====
+    report(45, "extrinsic calibration...");
 
     calib::ExtrinsicCalibCpuParams extrinsicParams;
-    extrinsicParams.leftPointsPerView = leftCorners;
-    extrinsicParams.rightPointsPerView = rightCorners;
+    extrinsicParams.leftPointsPerView = input.leftCorners;
+    extrinsicParams.rightPointsPerView = input.rightCorners;
     extrinsicParams.objectPoints = objectPoints;
     extrinsicParams.imageSize = imageSize;
     extrinsicParams.patternSize = patternSize;
-    extrinsicParams.squareSize = static_cast<float>(input.squareSizeMM);
+    extrinsicParams.squareSize = static_cast<float>(CHESSBOARD_SQUARE_MM);
 
     calib::ExtrinsicCalibCpu extrinsicCalib(extrinsicParams);
     auto extrinsicResult = extrinsicCalib.Execute(
@@ -143,7 +95,7 @@ CameraCalibResult runCameraCalibration(
         result.cameraMatrixR, result.distCoeffsR);
 
     if (!extrinsicResult.success) {
-        result.message = extrinsicResult.message;
+        result.message = "extrinsic failed: " + extrinsicResult.message;
         return result;
     }
 
@@ -154,10 +106,10 @@ CameraCalibResult runCameraCalibration(
     result.stereoReprojError = extrinsicResult.stereoReprojError;
     result.epipolarErrorMean = extrinsicResult.epipolarErrorMean;
 
-    report(75, "\xe5\xa4\x96\xe5\x8f\x82\xe6\xa0\x87\xe5\xae\x9a\xe5\xae\x8c\xe6\x88\x90");  // 外参标定完成
+    report(70, "extrinsic done");
 
-    // ===== 4. 立体矫正 =====
-    report(80, "\xe7\xab\x8b\xe4\xbd\x93\xe7\x9f\xab\xe6\xad\xa3\xe4\xb8\xad...");  // 立体矫正中...
+    // ===== 3. 立体矫正 =====
+    report(75, "stereo rectify...");
 
     calib::StereoRectifyCpuParams rectifyParams;
     rectifyParams.cameraMatrixL = result.cameraMatrixL;
@@ -172,7 +124,7 @@ CameraCalibResult runCameraCalibration(
     auto rectifyResult = rectify.Execute();
 
     if (!rectifyResult.success) {
-        result.message = rectifyResult.message;
+        result.message = "rectify failed: " + rectifyResult.message;
         return result;
     }
 
@@ -184,182 +136,93 @@ CameraCalibResult runCameraCalibration(
     result.validRoiL = rectifyResult.validRoiLeft;
     result.validRoiR = rectifyResult.validRoiRight;
 
-    report(100, "\xe6\xa0\x87\xe5\xae\x9a\xe5\xae\x8c\xe6\x88\x90");  // 标定完成
+    report(100, "calibration done");
     result.success = true;
     return result;
 }
 
 // ============================================================================
-// 仅内参标定
+// 激光标定（依赖相机标定结果）
 // ============================================================================
-bool runIntrinsicCalibration(
-    const std::vector<cv::Mat>& leftImages,
-    const std::vector<cv::Mat>& rightImages,
-    int chessboardCols, int chessboardRows, double squareSizeMM,
-    int imageWidth, int imageHeight,
-    cv::Mat& cameraMatrixL, cv::Mat& distCoeffsL,
-    cv::Mat& cameraMatrixR, cv::Mat& distCoeffsR,
-    double& rmsError,
+LaserCalibResult runLaserCalibration(const LaserCalibInput& input,
     std::function<void(int, const std::string&)> progress)
 {
-    cv::Size patternSize(chessboardCols, chessboardRows);
+    LaserCalibResult result;
 
-    std::vector<std::vector<cv::Point2f>> leftCorners, rightCorners;
-    if (!detectCorners(leftImages, patternSize, leftCorners) ||
-        !detectCorners(rightImages, patternSize, rightCorners))
-        return false;
+    if (!input.cameraCalib || !input.cameraCalib->success) {
+        result.message = "camera calibration required";
+        return result;
+    }
+    if (input.leftImage.empty() || input.rightImage.empty()) {
+        result.message = "laser images empty";
+        return result;
+    }
 
-    int n = std::min(leftCorners.size(), rightCorners.size());
-    if (n < 5) return false;
-    leftCorners.resize(n);
-    rightCorners.resize(n);
+    // TODO: 对接激光算子
+    // 1. EndpointExtract(input.leftImage, input.rightImage, ...)
+    // 2. LaserLabel(...)
+    // 3. LaserMatch(...)
+    // 4. PlaneMap(...)
+    // 5. PoseOptimize(...)
+    // 6. VirtualCameraPose(...)
+    // 使用 input.cameraCalib->cameraMatrixL/R, distCoeffsL/R, R1/R2/P1/P2/Q
 
-    calib::IntrinsicCalibParams params;
-    params.chessboard_width = chessboardCols;
-    params.chessboard_height = chessboardRows;
-    params.square_size_mm = squareSizeMM;
-    params.image_width = imageWidth;
-    params.image_height = imageHeight;
-
-    calib::IntrinsicCalibCPU calib(params);
-    calib::IntrinsicCalibResult result;
-
-    if (!calib.Execute(leftCorners, rightCorners, result) || !result.success)
-        return false;
-
-    cameraMatrixL = result.left.camera_matrix.clone();
-    distCoeffsL = result.left.dist_coeffs.clone();
-    cameraMatrixR = result.right.camera_matrix.clone();
-    distCoeffsR = result.right.dist_coeffs.clone();
-    rmsError = result.reproj_error_mean;
-    return true;
+    result.message = "laser calibration: operator integration TODO";
+    return result;
 }
 
 // ============================================================================
-// 仅外参标定
+// 保存/加载（JSON）
 // ============================================================================
-bool runExtrinsicCalibration(
-    const std::vector<cv::Mat>& leftImages,
-    const std::vector<cv::Mat>& rightImages,
-    int chessboardCols, int chessboardRows, double squareSizeMM,
-    const cv::Mat& cameraMatrixL, const cv::Mat& distCoeffsL,
-    const cv::Mat& cameraMatrixR, const cv::Mat& distCoeffsR,
-    cv::Mat& R, cv::Mat& T, cv::Mat& E, cv::Mat& F,
-    double& stereoReprojError, double& epipolarErrorMean,
-    std::function<void(int, const std::string&)> progress)
-{
-    cv::Size patternSize(chessboardCols, chessboardRows);
-    cv::Size imageSize;
-    if (!leftImages.empty()) imageSize = leftImages[0].size();
-
-    std::vector<std::vector<cv::Point2f>> leftCorners, rightCorners;
-    if (!detectCorners(leftImages, patternSize, leftCorners) ||
-        !detectCorners(rightImages, patternSize, rightCorners))
-        return false;
-
-    int n = std::min(leftCorners.size(), rightCorners.size());
-    if (n < 5) return false;
-    leftCorners.resize(n);
-    rightCorners.resize(n);
-
-    auto objectPoints = generateObjectPoints(patternSize, squareSizeMM);
-
-    calib::ExtrinsicCalibCpuParams params;
-    params.leftPointsPerView = leftCorners;
-    params.rightPointsPerView = rightCorners;
-    params.objectPoints = objectPoints;
-    params.imageSize = imageSize;
-    params.patternSize = patternSize;
-    params.squareSize = static_cast<float>(squareSizeMM);
-
-    calib::ExtrinsicCalibCpu calib(params);
-    auto result = calib.Execute(cameraMatrixL, distCoeffsL, cameraMatrixR, distCoeffsR);
-
-    if (!result.success) return false;
-
-    R = result.R.clone();
-    T = result.T.clone();
-    E = result.E.clone();
-    F = result.F.clone();
-    stereoReprojError = result.stereoReprojError;
-    epipolarErrorMean = result.epipolarErrorMean;
-    return true;
-}
-
-// ============================================================================
-// 仅立体矫正
-// ============================================================================
-bool runStereoRectify(
-    const cv::Mat& cameraMatrixL, const cv::Mat& distCoeffsL,
-    const cv::Mat& cameraMatrixR, const cv::Mat& distCoeffsR,
-    const cv::Mat& R, const cv::Mat& T,
-    int imageWidth, int imageHeight,
-    cv::Mat& R1, cv::Mat& R2, cv::Mat& P1, cv::Mat& P2, cv::Mat& Q,
-    cv::Rect& validRoiL, cv::Rect& validRoiR,
-    std::function<void(int, const std::string&)> progress)
-{
-    calib::StereoRectifyCpuParams params;
-    params.cameraMatrixL = cameraMatrixL;
-    params.distCoeffsL = distCoeffsL;
-    params.cameraMatrixR = cameraMatrixR;
-    params.distCoeffsR = distCoeffsR;
-    params.imageSize = cv::Size(imageWidth, imageHeight);
-    params.R = R;
-    params.T = T;
-
-    calib::StereoRectifyCpu rectify(params);
-    auto result = rectify.Execute();
-
-    if (!result.success) return false;
-
-    R1 = result.R1.clone();
-    R2 = result.R2.clone();
-    P1 = result.P1.clone();
-    P2 = result.P2.clone();
-    Q = result.Q.clone();
-    validRoiL = result.validRoiLeft;
-    validRoiR = result.validRoiRight;
-    return true;
-}
-
-// ============================================================================
-// 保存/加载标定结果
-// ============================================================================
-bool saveCalibResult(const std::string& filepath, const CameraCalibResult& result)
+static nlohmann::json matToJson(const cv::Mat& m)
 {
     nlohmann::json j;
-    j["success"] = result.success;
-    j["message"] = result.message;
-    j["intrinsicRMS"] = result.intrinsicRMS;
-    j["stereoReprojError"] = result.stereoReprojError;
-    j["epipolarErrorMean"] = result.epipolarErrorMean;
-    j["validFrameCount"] = result.validFrameCount;
+    j["rows"] = m.rows;
+    j["cols"] = m.cols;
+    j["type"] = m.type();
+    std::vector<double> data;
+    for (int r = 0; r < m.rows; ++r)
+        for (int c = 0; c < m.cols; ++c)
+            data.push_back(m.at<double>(r, c));
+    j["data"] = data;
+    return j;
+}
 
-    // cv::Mat → JSON 辅助
-    auto matToJson = [](const cv::Mat& m) -> nlohmann::json {
-        nlohmann::json j;
-        j["rows"] = m.rows;
-        j["cols"] = m.cols;
-        j["type"] = m.type();
-        std::vector<double> data;
-        for (int r = 0; r < m.rows; ++r)
-            for (int c = 0; c < m.cols; ++c)
-                data.push_back(m.at<double>(r, c));
-        j["data"] = data;
-        return j;
-    };
+static cv::Mat jsonToMat(const nlohmann::json& j)
+{
+    int rows = j.value("rows", 0);
+    int cols = j.value("cols", 0);
+    int type = j.value("type", CV_64F);
+    cv::Mat m(rows, cols, type);
+    const auto& data = j["data"];
+    int idx = 0;
+    for (int r = 0; r < rows; ++r)
+        for (int c = 0; c < cols; ++c)
+            m.at<double>(r, c) = data[idx++];
+    return m;
+}
 
-    j["cameraMatrixL"] = matToJson(result.cameraMatrixL);
-    j["distCoeffsL"] = matToJson(result.distCoeffsL);
-    j["cameraMatrixR"] = matToJson(result.cameraMatrixR);
-    j["distCoeffsR"] = matToJson(result.distCoeffsR);
-    j["R"] = matToJson(result.R);
-    j["T"] = matToJson(result.T);
-    j["R1"] = matToJson(result.R1);
-    j["R2"] = matToJson(result.R2);
-    j["P1"] = matToJson(result.P1);
-    j["P2"] = matToJson(result.P2);
-    j["Q"] = matToJson(result.Q);
+bool saveCalibResult(const std::string& filepath, const CameraCalibResult& r)
+{
+    nlohmann::json j;
+    j["success"] = r.success;
+    j["message"] = r.message;
+    j["intrinsicRMS"] = r.intrinsicRMS;
+    j["stereoReprojError"] = r.stereoReprojError;
+    j["epipolarErrorMean"] = r.epipolarErrorMean;
+    j["validFrameCount"] = r.validFrameCount;
+
+    j["cameraMatrixL"] = matToJson(r.cameraMatrixL);
+    j["distCoeffsL"] = matToJson(r.distCoeffsL);
+    j["cameraMatrixR"] = matToJson(r.cameraMatrixR);
+    j["distCoeffsR"] = matToJson(r.distCoeffsR);
+    j["R"] = matToJson(r.R);
+    j["T"] = matToJson(r.T);
+    j["R1"] = matToJson(r.R1);
+    j["R2"] = matToJson(r.R2);
+    j["P1"] = matToJson(r.P1);
+    j["P2"] = matToJson(r.P2);
+    j["Q"] = matToJson(r.Q);
 
     std::ofstream ofs(filepath);
     if (!ofs.is_open()) return false;
@@ -367,46 +230,59 @@ bool saveCalibResult(const std::string& filepath, const CameraCalibResult& resul
     return true;
 }
 
-bool loadCalibResult(const std::string& filepath, CameraCalibResult& result)
+bool loadCalibResult(const std::string& filepath, CameraCalibResult& r)
 {
     std::ifstream ifs(filepath);
     if (!ifs.is_open()) return false;
     nlohmann::json j;
     ifs >> j;
 
-    result.success = j.value("success", false);
-    result.message = j.value("message", "");
-    result.intrinsicRMS = j.value("intrinsicRMS", 0.0);
-    result.stereoReprojError = j.value("stereoReprojError", 0.0);
-    result.epipolarErrorMean = j.value("epipolarErrorMean", 0.0);
-    result.validFrameCount = j.value("validFrameCount", 0);
+    r.success = j.value("success", false);
+    r.message = j.value("message", "");
+    r.intrinsicRMS = j.value("intrinsicRMS", 0.0);
+    r.stereoReprojError = j.value("stereoReprojError", 0.0);
+    r.epipolarErrorMean = j.value("epipolarErrorMean", 0.0);
+    r.validFrameCount = j.value("validFrameCount", 0);
 
-    auto jsonToMat = [](const nlohmann::json& j) -> cv::Mat {
-        int rows = j.value("rows", 0);
-        int cols = j.value("cols", 0);
-        int type = j.value("type", CV_64F);
-        cv::Mat m(rows, cols, type);
-        auto data = j["data"];
-        int idx = 0;
-        for (int r = 0; r < rows; ++r)
-            for (int c = 0; c < cols; ++c)
-                m.at<double>(r, c) = data[idx++];
-        return m;
-    };
+    if (j.contains("cameraMatrixL")) r.cameraMatrixL = jsonToMat(j["cameraMatrixL"]);
+    if (j.contains("distCoeffsL")) r.distCoeffsL = jsonToMat(j["distCoeffsL"]);
+    if (j.contains("cameraMatrixR")) r.cameraMatrixR = jsonToMat(j["cameraMatrixR"]);
+    if (j.contains("distCoeffsR")) r.distCoeffsR = jsonToMat(j["distCoeffsR"]);
+    if (j.contains("R")) r.R = jsonToMat(j["R"]);
+    if (j.contains("T")) r.T = jsonToMat(j["T"]);
+    if (j.contains("R1")) r.R1 = jsonToMat(j["R1"]);
+    if (j.contains("R2")) r.R2 = jsonToMat(j["R2"]);
+    if (j.contains("P1")) r.P1 = jsonToMat(j["P1"]);
+    if (j.contains("P2")) r.P2 = jsonToMat(j["P2"]);
+    if (j.contains("Q")) r.Q = jsonToMat(j["Q"]);
 
-    if (j.contains("cameraMatrixL")) result.cameraMatrixL = jsonToMat(j["cameraMatrixL"]);
-    if (j.contains("distCoeffsL")) result.distCoeffsL = jsonToMat(j["distCoeffsL"]);
-    if (j.contains("cameraMatrixR")) result.cameraMatrixR = jsonToMat(j["cameraMatrixR"]);
-    if (j.contains("distCoeffsR")) result.distCoeffsR = jsonToMat(j["distCoeffsR"]);
-    if (j.contains("R")) result.R = jsonToMat(j["R"]);
-    if (j.contains("T")) result.T = jsonToMat(j["T"]);
-    if (j.contains("R1")) result.R1 = jsonToMat(j["R1"]);
-    if (j.contains("R2")) result.R2 = jsonToMat(j["R2"]);
-    if (j.contains("P1")) result.P1 = jsonToMat(j["P1"]);
-    if (j.contains("P2")) result.P2 = jsonToMat(j["P2"]);
-    if (j.contains("Q")) result.Q = jsonToMat(j["Q"]);
+    return r.success;
+}
 
-    return result.success;
+bool saveLaserCalibResult(const std::string& filepath, const LaserCalibResult& r)
+{
+    nlohmann::json j;
+    j["success"] = r.success;
+    j["message"] = r.message;
+    j["lineCount"] = r.lineCount;
+    j["endpointCount"] = r.endpointCount;
+    std::ofstream ofs(filepath);
+    if (!ofs.is_open()) return false;
+    ofs << j.dump(2);
+    return true;
+}
+
+bool loadLaserCalibResult(const std::string& filepath, LaserCalibResult& r)
+{
+    std::ifstream ifs(filepath);
+    if (!ifs.is_open()) return false;
+    nlohmann::json j;
+    ifs >> j;
+    r.success = j.value("success", false);
+    r.message = j.value("message", "");
+    r.lineCount = j.value("lineCount", 0);
+    r.endpointCount = j.value("endpointCount", 0);
+    return r.success;
 }
 
 } // namespace calibration
