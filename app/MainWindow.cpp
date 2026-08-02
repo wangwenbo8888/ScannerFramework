@@ -293,7 +293,7 @@ void MainWindow::onCalibDeviceClicked()
         }
 
         // 加载扫描仪 STL 到 3D 视图
-        std::string stlTarget = "E:/workfold/framework/build/JEAMMSCAN_clean.stl";
+        std::string stlTarget = "E:/workfold/framework/build/JEAMMSCAN.stl";
         osg::ref_ptr<osg::Group> scene = calib_display::buildCalibScene(stlTarget);
         m_3dView->setSceneData(scene);
         m_3dView->setCenterOverlayVisible(false);
