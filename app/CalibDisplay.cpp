@@ -224,10 +224,10 @@ static osg::Geode* loadStlManual(const std::string& path)
         if (fread(&attr, 2, 1, f) != 1) break;
 
         verts->push_back(osg::Vec3(v[0], v[1], v[2]));
+        verts->push_back(osg::Vec3(v[6], v[7], v[8]));  // p2 在前（交换 p1/p2 翻转绕序 CW→CCW）
         verts->push_back(osg::Vec3(v[3], v[4], v[5]));
-        verts->push_back(osg::Vec3(v[6], v[7], v[8]));
         osg::Vec3 p0(v[0],v[1],v[2]), p1(v[3],v[4],v[5]), p2(v[6],v[7],v[8]);
-        osg::Vec3 nm = (p1 - p0) ^ (p2 - p0);   // 叉积重算法线
+        osg::Vec3 nm = (p2 - p0) ^ (p1 - p0);   // 与新绕序一致的叉积法线
         nm.normalize();
         for (int k = 0; k < 3; ++k) norms->push_back(nm);
     }
@@ -246,7 +246,7 @@ static osg::Geode* loadStlManual(const std::string& path)
     ss->setMode(GL_LIGHTING, osg::StateAttribute::ON);
     ss->setMode(GL_LIGHT0, osg::StateAttribute::ON);
     osg::ref_ptr<osg::LightModel> lightModel = new osg::LightModel;
-    lightModel->setTwoSided(true);
+    lightModel->setTwoSided(false);  // 单面光照：内表面不亮，减少透过开口看到内部的视觉影响
     ss->setAttributeAndModes(lightModel.get());
     osg::ref_ptr<osg::Material> mat = new osg::Material;
     mat->setDiffuse(osg::Material::FRONT_AND_BACK, osg::Vec4(0.75f, 0.75f, 0.75f, 1.0f));
@@ -284,11 +284,11 @@ static osg::MatrixTransform* createPoseModel(const std::string& stlPath,
 
     auto* cloned = dynamic_cast<osg::Node*>(geo->clone(osg::CopyOp::DEEP_COPY_NODES));
     osg::Node* child = cloned ? cloned : geo.get();
-    applyColorRecursive(child, osg::Vec4(r, g, b, 0.85f));
+    applyColorRecursive(child, osg::Vec4(r, g, b, 1.0f));
     xform->addChild(child);
 
     osg::StateSet* ss = xform->getOrCreateStateSet();
-    ss->setMode(GL_CULL_FACE, osg::StateAttribute::OFF);     // 撤掉剔除（避免嵌套组件 z-fighting）
+    ss->setMode(GL_CULL_FACE, osg::StateAttribute::ON);      // 只渲染外表面（单壳模型，不再有嵌套组件问题）
     ss->setMode(GL_BLEND, osg::StateAttribute::OFF);        // 第2项：不透明（恢复深度写入）
     ss->setRenderingHint(osg::StateSet::OPAQUE_BIN);
     return xform;
