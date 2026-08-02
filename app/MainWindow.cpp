@@ -325,6 +325,7 @@ void MainWindow::onCalibDeviceClicked()
             // 上侧横排：左右（ArrowSlider 水平 + 标签），两侧留 10% 空白使总长 80%
             if (vLayout) {
                 auto* lrWidget = new QWidget();
+                lrWidget->setObjectName("calibLrBar");
                 lrWidget->setFixedHeight(60);
                 auto* lrLayout = new QHBoxLayout(lrWidget);
                 lrLayout->setContentsMargins(0, 10, 0, 10);
@@ -353,7 +354,9 @@ void MainWindow::onCalibDeviceClicked()
             if (hLayout) {
                 hLayout->addWidget(m_calibBoard2D, 1);
                 // 前后容器（和远近完全一样的结构）
-                auto* fbLayout = new QVBoxLayout();
+                auto* fbWidget = new QWidget();
+                fbWidget->setObjectName("calibFbBar");
+                auto* fbLayout = new QVBoxLayout(fbWidget);
                 fbLayout->setContentsMargins(6, 10, 6, 10);
                 auto* labelF = new QLabel(QStringLiteral("\xe5\x89\x8d"));  // 前
                 labelF->setAlignment(Qt::AlignCenter);
@@ -377,11 +380,18 @@ void MainWindow::onCalibDeviceClicked()
                 labelB->setAlignment(Qt::AlignCenter);
                 labelB->setStyleSheet("color: #FF0000; font-size: 14px; font-weight: bold;");
                 fbLayout->addWidget(labelB);
-                hLayout->addLayout(fbLayout);
+                hLayout->addWidget(fbWidget);
             }
         }
+        // 每次进入标定都显示（第二次以后也能显示）
         m_calibBoard2D->show();
         m_calibBoard2D->update();
+        {
+            auto* va = m_3dView ? m_3dView->parentWidget()->parentWidget() : nullptr;
+            if (va) { auto* b = va->findChild<QWidget*>("calibLrBar"); if (b) b->show(); }
+            auto* vc = m_3dView ? m_3dView->parentWidget() : nullptr;
+            if (vc) { auto* b = vc->findChild<QWidget*>("calibFbBar"); if (b) b->show(); }
+        }
 
         statusBar()->showMessage(QStringLiteral("标定显示模式"));
     }
@@ -389,6 +399,34 @@ void MainWindow::onCalibDeviceClicked()
 
 void MainWindow::onScanClicked()
 {
+    // 切换回默认界面：隐藏标定板和彩条，恢复相机
+    if (m_calibBoard2D) m_calibBoard2D->hide();
+    // 隐藏左右、前后彩条
+    auto* viewArea = m_3dView ? m_3dView->parentWidget()->parentWidget() : nullptr;
+    if (viewArea) {
+        auto* lrBar = viewArea->findChild<QWidget*>("calibLrBar");
+        if (lrBar) lrBar->hide();
+    }
+    auto* viewContainer = m_3dView ? m_3dView->parentWidget() : nullptr;
+    if (viewContainer) {
+        auto* fbBar = viewContainer->findChild<QWidget*>("calibFbBar");
+        if (fbBar) fbBar->hide();
+    }
+    // 清空 3D 场景，恢复初始状态
+    if (m_3dView) {
+        m_3dView->clearScene();
+        m_3dView->setCenterOverlayVisible(true);
+        m_3dView->viewer()->getCamera()->setClearColor(osg::Vec4(0.878f, 0.878f, 0.878f, 1.0f));
+        auto* manip = new osgGA::TrackballManipulator();
+        m_3dView->setCameraManipulator(manip);
+        manip->home(0);
+    }
+    // 显示悬浮工具条
+    if (m_floatingToolbar) {
+        m_floatingToolbar->setVisible(true);
+        m_floatingToolbar->show();
+    }
+
     auto* series = static_cast<LEADSCANSeries*>(m_integrateTestDialog);
     if (!series) {
         if (!m_integrateTestDialog) m_integrateTestDialog = new LEADSCANSeries();
@@ -728,6 +766,30 @@ QWidget *MainWindow::createToolBar()
 
         if (i == 1) {
             connect(btn, &QPushButton::clicked, this, &MainWindow::onCalibDeviceClicked);
+        }
+
+        // 标点扫描/面片扫描/点云扫描/双扫描/切片扫描：切换回默认界面
+        if (i == 0 || i == 2 || i == 3 || i == 4 || i == 5) {
+            connect(btn, &QPushButton::clicked, this, [this]() {
+                if (m_calibBoard2D) m_calibBoard2D->hide();
+                // 隐藏左右、前后彩条
+                auto* va = m_3dView ? m_3dView->parentWidget()->parentWidget() : nullptr;
+                if (va) { auto* b = va->findChild<QWidget*>("calibLrBar"); if (b) b->hide(); }
+                auto* vc = m_3dView ? m_3dView->parentWidget() : nullptr;
+                if (vc) { auto* b = vc->findChild<QWidget*>("calibFbBar"); if (b) b->hide(); }
+                if (m_3dView) {
+                    m_3dView->clearScene();
+                    m_3dView->setCenterOverlayVisible(true);
+                    m_3dView->viewer()->getCamera()->setClearColor(osg::Vec4(0.878f, 0.878f, 0.878f, 1.0f));
+                    auto* manip = new osgGA::TrackballManipulator();
+                    m_3dView->setCameraManipulator(manip);
+                    manip->home(0);
+                }
+                if (m_floatingToolbar) {
+                    m_floatingToolbar->setVisible(true);
+                    m_floatingToolbar->show();
+                }
+            });
         }
 
         if (i == 0) {
