@@ -467,4 +467,70 @@ void CalibBoard2D::paintEvent(QPaintEvent*)
     p.drawRect(boardX, boardY, boardW, boardH);
 }
 
+// ============================================================================
+// PoseBar — 姿态偏差彩条
+// ============================================================================
+calib_display::PoseBar::PoseBar(const QString& title, Orient o, QWidget* parent)
+    : QWidget(parent), m_title(title), m_orient(o)
+{
+    setAutoFillBackground(true);
+    QPalette pal = palette();
+    pal.setColor(QPalette::Window, QColor(240, 240, 240));
+    setPalette(pal);
+    if (o == Horizontal)
+        setMinimumHeight(30);
+    else
+        setMinimumWidth(50);
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+}
+
+void calib_display::PoseBar::setValue(float val, float maxRange)
+{
+    m_val = val;
+    m_maxRange = maxRange;
+    update();
+}
+
+void calib_display::PoseBar::paintEvent(QPaintEvent*)
+{
+    QPainter p(this);
+    int W = width(), H = height();
+    float level = std::min(fabsf(m_val) / m_maxRange, 1.0f);
+    int segW = 16, segH = 14, segPitch = 18;
+
+    p.setFont(QFont(QString::fromUtf8("微软雅黑"), 10));
+
+    if (m_orient == Horizontal) {
+        int contentW = 50 + 10 + 60 + 10 + 5 * segPitch;
+        int x0 = (W - contentW) / 2;
+        if (x0 < 4) x0 = 4;
+        p.setPen(QColor(255, 255, 255));
+        p.drawText(QRectF(x0, 0, 50, H), Qt::AlignVCenter | Qt::AlignLeft, m_title);
+        p.setPen(QColor((int)(level*255), (int)((1-level)*255), 0));
+        p.drawText(QRectF(x0+60, 0, 60, H), Qt::AlignVCenter | Qt::AlignLeft, QString::asprintf("%+.1fmm", m_val));
+        int sy = (H - segH) / 2;
+        for (int j = 0; j < 5; ++j) {
+            float sl = j / 4.0f;
+            float a = (sl <= level) ? 1.0f : 0.2f;
+            p.fillRect(QRect(x0+130+j*segPitch, sy, segW, segH),
+                       QColor((int)(sl*255), (int)((1-sl)*255), 0, (int)(a*255)));
+        }
+    } else {
+        int sx = (W - segW) / 2;
+        int contentH = 20 + 20 + 10 + 5 * segPitch;
+        int y0 = (H - contentH) / 2;
+        if (y0 < 4) y0 = 4;
+        p.setPen(QColor(255, 255, 255));
+        p.drawText(QRectF(0, y0, W, 20), Qt::AlignCenter, m_title);
+        p.setPen(QColor((int)(level*255), (int)((1-level)*255), 0));
+        p.drawText(QRectF(0, y0+22, W, 20), Qt::AlignCenter, QString::asprintf("%+.1fmm", m_val));
+        for (int j = 0; j < 5; ++j) {
+            float sl = j / 4.0f;
+            float a = (sl <= level) ? 1.0f : 0.2f;
+            p.fillRect(QRect(sx, y0+52+j*segPitch, segW, segH),
+                       QColor((int)(sl*255), (int)((1-sl)*255), 0, (int)(a*255)));
+        }
+    }
+}
+
 } // namespace calib_display

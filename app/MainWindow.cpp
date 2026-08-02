@@ -286,17 +286,29 @@ void MainWindow::onCalibDeviceClicked()
         m_3dView->setCameraManipulator(nullptr);
         m_3dView->viewer()->getCamera()->setViewMatrix(lockedView);
 
-        // 创建 2D 标定板，加入 3D 视图布局（各占一半）
+        // 创建 2D 标定板 + 彩条
         if (!m_calibBoard2D) {
             m_calibBoard2D = new calib_display::CalibBoard2D();
-            // 找到 m_3dView 所在的 QHBoxLayout
-            auto* parent = m_3dView->parentWidget();
-            if (parent) {
-                auto* layout = qobject_cast<QHBoxLayout*>(parent->layout());
-                if (layout) {
-                    // 调整 m_3dView 和标定板各占一半
-                    layout->addWidget(m_calibBoard2D, 1);
-                }
+            auto* viewContainer = m_3dView->parentWidget();
+            auto* hLayout = qobject_cast<QHBoxLayout*>(viewContainer->layout());
+            auto* viewArea = viewContainer->parentWidget();
+            auto* vLayout = qobject_cast<QVBoxLayout*>(viewArea->layout());
+
+            // 上侧横排：左右（插入 viewArea 的 QVBoxLayout 最前面，横跨整个窗口）
+            if (vLayout) {
+                auto* lrBar = new calib_display::PoseBar(
+                    QStringLiteral("\xe5\xb7\xa6\xe5\x8f\xb3"), calib_display::PoseBar::Horizontal);
+                lrBar->setValue(5.1f);
+                vLayout->insertWidget(0, lrBar);
+            }
+
+            // 右侧竖排：前后（加入 viewContainer 的 QHBoxLayout）
+            if (hLayout) {
+                hLayout->addWidget(m_calibBoard2D, 1);
+                auto* fbBar = new calib_display::PoseBar(
+                    QStringLiteral("\xe5\x89\x8d\xe5\x90\x8e"), calib_display::PoseBar::Vertical);
+                fbBar->setValue(12.3f);
+                hLayout->addWidget(fbBar);
             }
         }
         m_calibBoard2D->show();
