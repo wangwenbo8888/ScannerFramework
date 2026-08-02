@@ -16,19 +16,4 @@ protected:
     void paintEvent(QPaintEvent*) override;
 };
 
-// 姿态偏差彩条（标签+数值+5段绿→红，横/竖可选）
-class PoseBar : public QWidget {
-public:
-    enum Orient { Horizontal, Vertical };
-    explicit PoseBar(const QString& title, Orient o, QWidget* parent = nullptr);
-    void setValue(float val, float maxRange = 30.0f);
-protected:
-    void paintEvent(QPaintEvent*) override;
-private:
-    QString m_title;
-    float m_val = 0.0f;
-    float m_maxRange = 30.0f;
-    Orient m_orient;
-};
-
 } // namespace calib_display

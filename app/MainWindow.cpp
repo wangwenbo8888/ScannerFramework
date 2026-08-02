@@ -15,6 +15,7 @@
 #include <osg/Matrix>
 #include <osgGA/TrackballManipulator>
 #include <QPainter>
+#include <QPainterPath>
 #include <QApplication>
 #include <QHeaderView>
 #include <QScreen>
@@ -68,28 +69,55 @@ void ArrowSlider::paintEvent(QPaintEvent *event)
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);
 
-    if (!m_groovePixmap.isNull()) {
-        QPixmap scaled = m_groovePixmap.scaled(24, height() - 20, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
-        int gx = (width() - scaled.width()) / 2;
-        p.drawPixmap(gx, 10, scaled);
-    }
-
     QStyleOptionSlider opt;
     initStyleOption(&opt);
     QRect handleRect = style()->subControlRect(QStyle::CC_Slider, &opt, QStyle::SC_SliderHandle, this);
 
-    int cy = handleRect.center().y();
-    int grooveX = (width() - 24) / 2;
-    int cx = grooveX + 24;
-
-    p.setBrush(QBrush(Qt::white));
-    p.setPen(QPen(QColor(80, 80, 80), 1));
-
-    QPolygon arrow;
-    arrow << QPoint(cx, cy - 4)
-          << QPoint(cx - 24, cy)
-          << QPoint(cx, cy + 4);
-    p.drawPolygon(arrow);
+    if (orientation() == Qt::Vertical) {
+        // 竖排：渐变槽竖向，箭头指向左
+        if (!m_groovePixmap.isNull()) {
+            QPixmap scaled = m_groovePixmap.scaled(24, height() - 20, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+            int gx = (width() - scaled.width()) / 2;
+            p.drawPixmap(gx, 10, scaled);
+        }
+        int cy = handleRect.center().y();
+        int grooveX = (width() - 24) / 2;
+        int cx = grooveX + 24;
+        p.setBrush(QBrush(Qt::white));
+        p.setPen(QPen(QColor(80, 80, 80), 1));
+        QPolygon arrow;
+        arrow << QPoint(cx, cy - 4)
+              << QPoint(cx - 24, cy)
+              << QPoint(cx, cy + 4);
+        p.drawPolygon(arrow);
+    } else {
+        // 横排：渐变槽横向(旋转90度)，圆头，箭头指向下
+        if (!m_groovePixmap.isNull()) {
+            QTransform rotate;
+            rotate.rotate(90);
+            QPixmap rotated = m_groovePixmap.transformed(rotate, Qt::SmoothTransformation);
+            int gw = width() - 20;
+            int gh = 24;
+            QPixmap scaled = rotated.scaled(gw, gh, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+            int gy = (height() - gh) / 2;
+            int radius = gh / 2;
+            QPainterPath clip;
+            clip.addRoundedRect(QRectF(10, gy, gw, gh), radius, radius);
+            p.setClipPath(clip);
+            p.drawPixmap(10, gy, scaled);
+            p.setClipping(false);
+        }
+        int cx = handleRect.center().x();
+        int grooveY = (height() - 24) / 2;
+        int cy = grooveY;
+        p.setBrush(QBrush(Qt::white));
+        p.setPen(QPen(QColor(80, 80, 80), 1));
+        QPolygon arrow;
+        arrow << QPoint(cx - 4, cy)
+              << QPoint(cx, cy + 24)
+              << QPoint(cx + 4, cy);
+        p.drawPolygon(arrow);
+    }
 }
 
 MainWindow::MainWindow(AppContext* appCtx, QWidget *parent) : QMainWindow(parent), m_appCtx(appCtx)
@@ -286,7 +314,7 @@ void MainWindow::onCalibDeviceClicked()
         m_3dView->setCameraManipulator(nullptr);
         m_3dView->viewer()->getCamera()->setViewMatrix(lockedView);
 
-        // 创建 2D 标定板 + 彩条
+        // 创建 2D 标定板 + 彩条（ArrowSlider，和远近一样的风格）
         if (!m_calibBoard2D) {
             m_calibBoard2D = new calib_display::CalibBoard2D();
             auto* viewContainer = m_3dView->parentWidget();
@@ -294,21 +322,62 @@ void MainWindow::onCalibDeviceClicked()
             auto* viewArea = viewContainer->parentWidget();
             auto* vLayout = qobject_cast<QVBoxLayout*>(viewArea->layout());
 
-            // 上侧横排：左右（插入 viewArea 的 QVBoxLayout 最前面，横跨整个窗口）
+            // 上侧横排：左右（ArrowSlider 水平 + 标签），两侧留 10% 空白使总长 80%
             if (vLayout) {
-                auto* lrBar = new calib_display::PoseBar(
-                    QStringLiteral("\xe5\xb7\xa6\xe5\x8f\xb3"), calib_display::PoseBar::Horizontal);
-                lrBar->setValue(5.1f);
-                vLayout->insertWidget(0, lrBar);
+                auto* lrWidget = new QWidget();
+                lrWidget->setFixedHeight(60);
+                auto* lrLayout = new QHBoxLayout(lrWidget);
+                lrLayout->setContentsMargins(0, 10, 0, 10);
+                lrLayout->setSpacing(4);
+                lrLayout->addStretch(1);  // 左侧 10% 空白
+                auto* labelL = new QLabel(QStringLiteral("\xe5\xb7\xa6"));  // 左
+                labelL->setAlignment(Qt::AlignCenter);
+                labelL->setStyleSheet("color: #0066FF; font-size: 14px; font-weight: bold;");
+                auto* lrSlider = new ArrowSlider(Qt::Horizontal);
+                lrSlider->setRange(0, 100);
+                lrSlider->setValue(50);
+                lrSlider->setFixedHeight(48);
+                lrSlider->setMinimumWidth(200);
+                lrSlider->setGroovePixmap(renderSvg(":/icons/resources/icons/div.color-gradient-bar.svg", 800, 24));
+                auto* labelR = new QLabel(QStringLiteral("\xe5\x8f\xb3"));  // 右
+                labelR->setAlignment(Qt::AlignCenter);
+                labelR->setStyleSheet("color: #FF0000; font-size: 14px; font-weight: bold;");
+                lrLayout->addWidget(labelL);
+                lrLayout->addWidget(lrSlider, 8);  // 80% 比例
+                lrLayout->addWidget(labelR);
+                lrLayout->addStretch(1);  // 右侧 10% 空白
+                vLayout->insertWidget(0, lrWidget);
             }
 
-            // 右侧竖排：前后（加入 viewContainer 的 QHBoxLayout）
+            // 右侧竖排：前后（ArrowSlider 垂直 + 标签，和远近一样）
             if (hLayout) {
                 hLayout->addWidget(m_calibBoard2D, 1);
-                auto* fbBar = new calib_display::PoseBar(
-                    QStringLiteral("\xe5\x89\x8d\xe5\x90\x8e"), calib_display::PoseBar::Vertical);
-                fbBar->setValue(12.3f);
-                hLayout->addWidget(fbBar);
+                // 前后容器（和远近完全一样的结构）
+                auto* fbLayout = new QVBoxLayout();
+                fbLayout->setContentsMargins(6, 10, 6, 10);
+                auto* labelF = new QLabel(QStringLiteral("\xe5\x89\x8d"));  // 前
+                labelF->setAlignment(Qt::AlignCenter);
+                labelF->setStyleSheet("color: #0066FF; font-size: 14px; font-weight: bold;");
+                fbLayout->addWidget(labelF);
+                auto* fbSlider = new ArrowSlider(Qt::Vertical);
+                fbSlider->setObjectName("fbSlider");
+                fbSlider->setRange(0, 100);
+                fbSlider->setValue(50);
+                fbSlider->setFixedWidth(48);
+                fbSlider->setMinimumHeight(200);
+                fbSlider->setGroovePixmap(renderSvg(":/icons/resources/icons/div.color-gradient-bar.svg", 24, 800));
+                fbSlider->setStyleSheet(
+                    "QSlider#fbSlider::groove:vertical { background: transparent; }"
+                    "QSlider#fbSlider::handle:vertical { background: transparent; width: 20px; height: 16px; }"
+                    "QSlider#fbSlider::sub-page:vertical { background: transparent; }"
+                    "QSlider#fbSlider::add-page:vertical { background: transparent; }"
+                );
+                fbLayout->addWidget(fbSlider, 1);
+                auto* labelB = new QLabel(QStringLiteral("\xe5\x90\x8e"));  // 后
+                labelB->setAlignment(Qt::AlignCenter);
+                labelB->setStyleSheet("color: #FF0000; font-size: 14px; font-weight: bold;");
+                fbLayout->addWidget(labelB);
+                hLayout->addLayout(fbLayout);
             }
         }
         m_calibBoard2D->show();
