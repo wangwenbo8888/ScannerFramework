@@ -24,6 +24,8 @@
 #include <QScrollArea>
 #include <QShortcut>
 #include <QMessageBox>
+#include <QMenu>
+#include <QFileDialog>
 #include <QStatusBar>
 #include <cstdio>
 
@@ -766,6 +768,58 @@ QWidget *MainWindow::createToolBar()
 
         if (i == 1) {
             connect(btn, &QPushButton::clicked, this, &MainWindow::onCalibDeviceClicked);
+        }
+
+        // 文件管理：弹出导入/导出菜单
+        if (i == 0) {
+            connect(btn, &QPushButton::clicked, this, [this, btn]() {
+                QMenu menu(btn);
+                menu.setStyleSheet("QMenu { background: white; border: 1px solid #d0d0d0; }"
+                                   "QMenu::item { padding: 6px 24px; }"
+                                   "QMenu::item:selected { background: #e0e0e0; }");
+
+                menu.addAction(QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe6\xa0\x87\xe5\xbf\x97\xe7\x82\xb9"), [this]() {
+                    // 导入标志点
+                    QString path = QFileDialog::getOpenFileName(this, QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe6\xa0\x87\xe5\xbf\x97\xe7\x82\xb9"), "", "Marker Files (*.json *.txt)");
+                    if (!path.isEmpty()) statusBar()->showMessage(QStringLiteral("\xe5\xb7\xb2\xe5\xaf\xbc\xe5\x85\xa5: ") + path);
+                });
+                menu.addAction(QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe7\x82\xb9\xe4\xba\x91"), [this]() {
+                    // 导入点云
+                    QString path = QFileDialog::getOpenFileName(this, QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe7\x82\xb9\xe4\xba\x91"), "", "Point Cloud (*.ply *.pcd *.xyz)");
+                    if (!path.isEmpty()) statusBar()->showMessage(QStringLiteral("\xe5\xb7\xb2\xe5\xaf\xbc\xe5\x85\xa5: ") + path);
+                });
+                menu.addAction(QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe5\xb7\xa5\xe7\xa8\x8b\xe6\x96\x87\xe4\xbb\xb6"), [this]() {
+                    // 导入工程文件
+                    QString path = QFileDialog::getOpenFileName(this, QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe5\xb7\xa5\xe7\xa8\x8b\xe6\x96\x87\xe4\xbb\xb6"), "", "Project (*.leadscan)");
+                    if (!path.isEmpty()) statusBar()->showMessage(QStringLiteral("\xe5\xb7\xb2\xe5\xaf\xbc\xe5\x85\xa5: ") + path);
+                });
+
+                menu.addSeparator();
+
+                menu.addAction(QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe6\xa0\x87\xe5\xbf\x97\xe7\x82\xb9"), [this]() {
+                    // 导出标志点
+                    QString path = QFileDialog::getSaveFileName(this, QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe6\xa0\x87\xe5\xbf\x97\xe7\x82\xb9"), "markers.json", "Marker Files (*.json *.txt)");
+                    if (!path.isEmpty()) statusBar()->showMessage(QStringLiteral("\xe5\xb7\xb2\xe5\xaf\xbc\xe5\x87\xba: ") + path);
+                });
+                menu.addAction(QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe7\x82\xb9\xe4\xba\x91"), [this]() {
+                    // 导出点云
+                    QString path = QFileDialog::getSaveFileName(this, QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe7\x82\xb9\xe4\xba\x91"), "pointcloud.ply", "Point Cloud (*.ply *.pcd *.xyz)");
+                    if (!path.isEmpty()) statusBar()->showMessage(QStringLiteral("\xe5\xb7\xb2\xe5\xaf\xbc\xe5\x87\xba: ") + path);
+                });
+                menu.addAction(QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe7\xbd\x91\xe6\xa0\xbc"), [this]() {
+                    // 导出网格
+                    QString path = QFileDialog::getSaveFileName(this, QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe7\xbd\x91\xe6\xa0\xbc"), "mesh.stl", "Mesh (*.stl *.obj)");
+                    if (!path.isEmpty()) statusBar()->showMessage(QStringLiteral("\xe5\xb7\xb2\xe5\xaf\xbc\xe5\x87\xba: ") + path);
+                });
+                menu.addAction(QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe5\xb7\xa5\xe7\xa8\x8b\xe6\x96\x87\xe4\xbb\xb6"), [this]() {
+                    // 导出工程文件
+                    QString path = QFileDialog::getSaveFileName(this, QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe5\xb7\xa5\xe7\xa8\x8b\xe6\x96\x87\xe4\xbb\xb6"), "project.leadscan", "Project (*.leadscan)");
+                    if (!path.isEmpty()) statusBar()->showMessage(QStringLiteral("\xe5\xb7\xb2\xe5\xaf\xbc\xe5\x87\xba: ") + path);
+                });
+
+                QPoint pos = btn->mapToGlobal(QPoint(btn->width() + 4, 0));
+                menu.exec(pos);
+            });
         }
 
         // 标点扫描/面片扫描/点云扫描/双扫描/切片扫描：切换回默认界面
