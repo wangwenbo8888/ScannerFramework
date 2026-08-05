@@ -11,6 +11,7 @@
 #include "stubs/camera_calib_workflow.h"
 #include "stubs/laser_calib_workflow.h"
 #include "stubs/scan_workflow.h"
+#include "file_io.h"
 #include <osg/Vec3>
 #include <osg/Matrix>
 #include <osgGA/TrackballManipulator>
@@ -779,42 +780,62 @@ QWidget *MainWindow::createToolBar()
                                    "QMenu::item:selected { background: #e0e0e0; }");
 
                 menu.addAction(QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe6\xa0\x87\xe5\xbf\x97\xe7\x82\xb9"), [this]() {
-                    // 导入标志点
                     QString path = QFileDialog::getOpenFileName(this, QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe6\xa0\x87\xe5\xbf\x97\xe7\x82\xb9"), "", "Marker Files (*.json *.txt)");
-                    if (!path.isEmpty()) statusBar()->showMessage(QStringLiteral("\xe5\xb7\xb2\xe5\xaf\xbc\xe5\x85\xa5: ") + path);
+                    if (path.isEmpty()) return;
+                    std::vector<osg::Vec3> markers;
+                    if (file_io::importMarkers(path.toStdString(), markers))
+                        statusBar()->showMessage(QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe6\xa0\x87\xe5\xbf\x97\xe7\x82\xb9 %1 \xe4\xb8\xaa").arg(markers.size()));
+                    else
+                        statusBar()->showMessage(QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe5\xa4\xb1\xe8\xb4\xa5"));
                 });
                 menu.addAction(QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe7\x82\xb9\xe4\xba\x91"), [this]() {
-                    // 导入点云
                     QString path = QFileDialog::getOpenFileName(this, QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe7\x82\xb9\xe4\xba\x91"), "", "Point Cloud (*.ply *.pcd *.xyz)");
-                    if (!path.isEmpty()) statusBar()->showMessage(QStringLiteral("\xe5\xb7\xb2\xe5\xaf\xbc\xe5\x85\xa5: ") + path);
+                    if (path.isEmpty()) return;
+                    std::vector<osg::Vec3> points;
+                    if (file_io::importPointCloud(path.toStdString(), points)) {
+                        statusBar()->showMessage(QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe7\x82\xb9\xe4\xba\x91 %1 \xe7\x82\xb9").arg(points.size()));
+                        if (m_3dView && !points.empty())
+                            m_3dView->loadPointCloud(points);
+                    } else
+                        statusBar()->showMessage(QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe5\xa4\xb1\xe8\xb4\xa5"));
                 });
                 menu.addAction(QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe5\xb7\xa5\xe7\xa8\x8b\xe6\x96\x87\xe4\xbb\xb6"), [this]() {
-                    // 导入工程文件
                     QString path = QFileDialog::getOpenFileName(this, QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe5\xb7\xa5\xe7\xa8\x8b\xe6\x96\x87\xe4\xbb\xb6"), "", "Project (*.leadscan)");
-                    if (!path.isEmpty()) statusBar()->showMessage(QStringLiteral("\xe5\xb7\xb2\xe5\xaf\xbc\xe5\x85\xa5: ") + path);
+                    if (!path.isEmpty()) statusBar()->showMessage(QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5: ") + path);
                 });
 
                 menu.addSeparator();
 
                 menu.addAction(QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe6\xa0\x87\xe5\xbf\x97\xe7\x82\xb9"), [this]() {
-                    // 导出标志点
                     QString path = QFileDialog::getSaveFileName(this, QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe6\xa0\x87\xe5\xbf\x97\xe7\x82\xb9"), "markers.json", "Marker Files (*.json *.txt)");
-                    if (!path.isEmpty()) statusBar()->showMessage(QStringLiteral("\xe5\xb7\xb2\xe5\xaf\xbc\xe5\x87\xba: ") + path);
+                    if (path.isEmpty()) return;
+                    std::vector<osg::Vec3> markers;  // TODO: 从扫描数据获取
+                    if (file_io::exportMarkers(path.toStdString(), markers))
+                        statusBar()->showMessage(QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe6\xa0\x87\xe5\xbf\x97\xe7\x82\xb9\xe6\x88\x90\xe5\x8a\x9f"));
+                    else
+                        statusBar()->showMessage(QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe5\xa4\xb1\xe8\xb4\xa5"));
                 });
                 menu.addAction(QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe7\x82\xb9\xe4\xba\x91"), [this]() {
-                    // 导出点云
                     QString path = QFileDialog::getSaveFileName(this, QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe7\x82\xb9\xe4\xba\x91"), "pointcloud.ply", "Point Cloud (*.ply *.pcd *.xyz)");
-                    if (!path.isEmpty()) statusBar()->showMessage(QStringLiteral("\xe5\xb7\xb2\xe5\xaf\xbc\xe5\x87\xba: ") + path);
+                    if (path.isEmpty()) return;
+                    std::vector<osg::Vec3> points;  // TODO: 从扫描数据获取
+                    if (file_io::exportPointCloud(path.toStdString(), points))
+                        statusBar()->showMessage(QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe7\x82\xb9\xe4\xba\x91\xe6\x88\x90\xe5\x8a\x9f"));
+                    else
+                        statusBar()->showMessage(QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe5\xa4\xb1\xe8\xb4\xa5"));
                 });
                 menu.addAction(QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe7\xbd\x91\xe6\xa0\xbc"), [this]() {
-                    // 导出网格
                     QString path = QFileDialog::getSaveFileName(this, QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe7\xbd\x91\xe6\xa0\xbc"), "mesh.stl", "Mesh (*.stl *.obj)");
-                    if (!path.isEmpty()) statusBar()->showMessage(QStringLiteral("\xe5\xb7\xb2\xe5\xaf\xbc\xe5\x87\xba: ") + path);
+                    if (path.isEmpty()) return;
+                    file_io::MeshData mesh;  // TODO: 从后处理结果获取
+                    if (file_io::exportMesh(path.toStdString(), mesh))
+                        statusBar()->showMessage(QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe7\xbd\x91\xe6\xa0\xbc\xe6\x88\x90\xe5\x8a\x9f"));
+                    else
+                        statusBar()->showMessage(QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe5\xa4\xb1\xe8\xb4\xa5"));
                 });
                 menu.addAction(QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe5\xb7\xa5\xe7\xa8\x8b\xe6\x96\x87\xe4\xbb\xb6"), [this]() {
-                    // 导出工程文件
                     QString path = QFileDialog::getSaveFileName(this, QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe5\xb7\xa5\xe7\xa8\x8b\xe6\x96\x87\xe4\xbb\xb6"), "project.leadscan", "Project (*.leadscan)");
-                    if (!path.isEmpty()) statusBar()->showMessage(QStringLiteral("\xe5\xb7\xb2\xe5\xaf\xbc\xe5\x87\xba: ") + path);
+                    if (!path.isEmpty()) statusBar()->showMessage(QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba: ") + path);
                 });
 
                 QPoint pos = btn->mapToGlobal(QPoint(btn->width() + 4, 0));

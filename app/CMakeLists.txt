@@ -19,6 +19,10 @@ set(APP_SOURCES
     ScannerWindow.cpp
     ScannerWindow.h
     ScannerWindow.ui
+    calib_workflow.cpp
+    calib_workflow.h
+    file_io.cpp
+    file_io.h
 )
 
 set(APP_RESOURCES
