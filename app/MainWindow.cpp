@@ -782,22 +782,73 @@ QWidget *MainWindow::createToolBar()
                 menu.addAction(QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe6\xa0\x87\xe5\xbf\x97\xe7\x82\xb9"), [this]() {
                     QString path = QFileDialog::getOpenFileName(this, QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe6\xa0\x87\xe5\xbf\x97\xe7\x82\xb9"), "", "Marker Files (*.json *.txt)");
                     if (path.isEmpty()) return;
+                    std::string spath = path.toStdString();
                     std::vector<osg::Vec3> markers;
-                    if (file_io::importMarkers(path.toStdString(), markers))
+                    if (file_io::importMarkers(spath, markers))
                         statusBar()->showMessage(QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe6\xa0\x87\xe5\xbf\x97\xe7\x82\xb9 %1 \xe4\xb8\xaa").arg(markers.size()));
                     else
                         statusBar()->showMessage(QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe5\xa4\xb1\xe8\xb4\xa5"));
                 });
                 menu.addAction(QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe7\x82\xb9\xe4\xba\x91"), [this]() {
-                    QString path = QFileDialog::getOpenFileName(this, QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe7\x82\xb9\xe4\xba\x91"), "", "Point Cloud (*.ply *.pcd *.xyz)");
+                    QString path = QFileDialog::getOpenFileName(this, QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe7\x82\xb9\xe4\xba\x91"), "", "Point Cloud (*.ply *.pcd *.xyz *.txt);;All Files (*.*)");
                     if (path.isEmpty()) return;
+                    QByteArray ba = path.toUtf8();
+                    std::string spath(ba.constData(), ba.size());
                     std::vector<osg::Vec3> points;
-                    if (file_io::importPointCloud(path.toStdString(), points)) {
-                        statusBar()->showMessage(QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe7\x82\xb9\xe4\xba\x91 %1 \xe7\x82\xb9").arg(points.size()));
-                        if (m_3dView && !points.empty())
+                    bool ok = file_io::importPointCloud(spath, points);
+
+                    // 诊断日志写文件
+                    FILE* logf = fopen("E:/workfold/framework/build/import_debug.log", "a");
+                    if (logf) {
+                        fprintf(logf, "=== import ===\n");
+                        fprintf(logf, "file: %s\n", spath.c_str());
+                        fprintf(logf, "ok=%d points=%zu\n", ok?1:0, points.size());
+                        if (!points.empty()) {
+                            float minx=1e30,miny=1e30,minz=1e30,maxx=-1e30,maxy=-1e30,maxz=-1e30;
+                            for (const auto& p : points) {
+                                if (p.x()<minx) minx=p.x(); if (p.x()>maxx) maxx=p.x();
+                                if (p.y()<miny) miny=p.y(); if (p.y()>maxy) maxy=p.y();
+                                if (p.z()<minz) minz=p.z(); if (p.z()>maxz) maxz=p.z();
+                            }
+                            fprintf(logf, "bbox: x[%.2f,%.2f] y[%.2f,%.2f] z[%.2f,%.2f]\n",
+                                    minx,maxx,miny,maxy,minz,maxz);
+                            fprintf(logf, "first5: (%.2f,%.2f,%.2f) (%.2f,%.2f,%.2f) (%.2f,%.2f,%.2f) (%.2f,%.2f,%.2f) (%.2f,%.2f,%.2f)\n",
+                                    points[0].x(),points[0].y(),points[0].z(),
+                                    points[1].x(),points[1].y(),points[1].z(),
+                                    points[2].x(),points[2].y(),points[2].z(),
+                                    points[3].x(),points[3].y(),points[3].z(),
+                                    points[4].x(),points[4].y(),points[4].z());
+                        }
+                        fprintf(logf, "m_3dView=%p\n", (void*)m_3dView);
+                        fclose(logf);
+                    }
+
+                    if (ok && !points.empty()) {
+                        statusBar()->showMessage(QStringLiteral("Imported %1 points").arg(points.size()));
+                        if (m_3dView) {
+                            m_3dView->setCenterOverlayVisible(false);
                             m_3dView->loadPointCloud(points);
-                    } else
-                        statusBar()->showMessage(QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe5\xa4\xb1\xe8\xb4\xa5"));
+                            m_3dView->autoFitCamera();
+                            m_3dView->viewer()->frame();
+                            m_3dView->update();
+                        }
+                    } else {
+                        statusBar()->showMessage("Import failed");
+                        QMessageBox::warning(this, "Import", "Failed to read point cloud. Check file format.");
+                    }
+                });
+                menu.addAction(QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe7\xbd\x91\xe6\xa0\xbc"), [this]() {
+                    QString path = QFileDialog::getOpenFileName(this, QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe7\xbd\x91\xe6\xa0\xbc"), "", "Mesh (*.stl *.obj);;All Files (*.*)");
+                    if (path.isEmpty()) return;
+                    if (m_3dView) {
+                        m_3dView->clearScene();
+                        if (m_3dView->loadMesh(path))
+                            statusBar()->showMessage(QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe7\xbd\x91\xe6\xa0\xbc\xe6\x88\x90\xe5\x8a\x9f: ") + path);
+                        else {
+                            statusBar()->showMessage(QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe7\xbd\x91\xe6\xa0\xbc\xe5\xa4\xb1\xe8\xb4\xa5"));
+                            QMessageBox::warning(this, "Import", "Failed to read mesh.");
+                        }
+                    }
                 });
                 menu.addAction(QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe5\xb7\xa5\xe7\xa8\x8b\xe6\x96\x87\xe4\xbb\xb6"), [this]() {
                     QString path = QFileDialog::getOpenFileName(this, QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe5\xb7\xa5\xe7\xa8\x8b\xe6\x96\x87\xe4\xbb\xb6"), "", "Project (*.leadscan)");
@@ -809,8 +860,9 @@ QWidget *MainWindow::createToolBar()
                 menu.addAction(QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe6\xa0\x87\xe5\xbf\x97\xe7\x82\xb9"), [this]() {
                     QString path = QFileDialog::getSaveFileName(this, QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe6\xa0\x87\xe5\xbf\x97\xe7\x82\xb9"), "markers.json", "Marker Files (*.json *.txt)");
                     if (path.isEmpty()) return;
+                    std::string spath = path.toStdString();
                     std::vector<osg::Vec3> markers;  // TODO: 从扫描数据获取
-                    if (file_io::exportMarkers(path.toStdString(), markers))
+                    if (file_io::exportMarkers(spath, markers))
                         statusBar()->showMessage(QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe6\xa0\x87\xe5\xbf\x97\xe7\x82\xb9\xe6\x88\x90\xe5\x8a\x9f"));
                     else
                         statusBar()->showMessage(QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe5\xa4\xb1\xe8\xb4\xa5"));
@@ -818,8 +870,9 @@ QWidget *MainWindow::createToolBar()
                 menu.addAction(QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe7\x82\xb9\xe4\xba\x91"), [this]() {
                     QString path = QFileDialog::getSaveFileName(this, QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe7\x82\xb9\xe4\xba\x91"), "pointcloud.ply", "Point Cloud (*.ply *.pcd *.xyz)");
                     if (path.isEmpty()) return;
+                    std::string spath = path.toStdString();
                     std::vector<osg::Vec3> points;  // TODO: 从扫描数据获取
-                    if (file_io::exportPointCloud(path.toStdString(), points))
+                    if (file_io::exportPointCloud(spath, points))
                         statusBar()->showMessage(QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe7\x82\xb9\xe4\xba\x91\xe6\x88\x90\xe5\x8a\x9f"));
                     else
                         statusBar()->showMessage(QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe5\xa4\xb1\xe8\xb4\xa5"));
@@ -827,8 +880,9 @@ QWidget *MainWindow::createToolBar()
                 menu.addAction(QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe7\xbd\x91\xe6\xa0\xbc"), [this]() {
                     QString path = QFileDialog::getSaveFileName(this, QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe7\xbd\x91\xe6\xa0\xbc"), "mesh.stl", "Mesh (*.stl *.obj)");
                     if (path.isEmpty()) return;
+                    std::string spath = path.toStdString();
                     file_io::MeshData mesh;  // TODO: 从后处理结果获取
-                    if (file_io::exportMesh(path.toStdString(), mesh))
+                    if (file_io::exportMesh(spath, mesh))
                         statusBar()->showMessage(QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe7\xbd\x91\xe6\xa0\xbc\xe6\x88\x90\xe5\x8a\x9f"));
                     else
                         statusBar()->showMessage(QStringLiteral("\xe5\xaf\xbc\xe5\x87\xba\xe5\xa4\xb1\xe8\xb4\xa5"));

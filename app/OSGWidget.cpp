@@ -1,10 +1,12 @@
 #include "OSGWidget.h"
 #include "data/PointCloudBuffer.h"
+#include "file_io.h"
 
 #include <osg/Geode>
 #include <osg/Geometry>
 #include <osg/Point>
 #include <osg/Material>
+#include <osg/LightModel>
 #include <osgDB/ReadFile>
 #include <osg/LineWidth>
 #include <osg/BlendFunc>
@@ -68,13 +70,28 @@ void OSGWidget::setSceneData(osg::Node *node)
 void OSGWidget::setCenterOverlayVisible(bool visible)
 {
     m_centerOverlayVisible = visible;
-    if (m_centerOverlayCamera.valid())
-        m_centerOverlayCamera->setNodeMask(visible ? 0xffffffff : 0);
+    if (!m_centerOverlayCamera.valid()) return;
+
+    if (visible) {
+        m_centerOverlayCamera->setNodeMask(0xffffffff);
+        // 确保 camera 在 sceneRoot 中
+        osg::Group* sceneRoot = m_viewer.valid() ? m_viewer->getSceneData()->asGroup() : nullptr;
+        if (sceneRoot && m_centerOverlayCamera->getNumParents() == 0)
+            sceneRoot->addChild(m_centerOverlayCamera.get());
+    } else {
+        m_centerOverlayCamera->setNodeMask(0);
+        // 从场景图中彻底移除
+        while (m_centerOverlayCamera->getNumParents() > 0)
+            m_centerOverlayCamera->getParent(0)->removeChild(m_centerOverlayCamera.get());
+    }
+    printf("  setCenterOverlayVisible(%d): parents=%d\n",
+           visible ? 1 : 0, m_centerOverlayCamera->getNumParents());
 }
 
 void OSGWidget::clearScene()
 {
     m_root->removeChildren(0, m_root->getNumChildren());
+    m_viewLocked = false;  // 解除视图锁定
     m_streamTimer->stop();
     if (m_streamFile.is_open())
         m_streamFile.close();
@@ -218,8 +235,66 @@ void OSGWidget::updateAxesView()
 
 void OSGWidget::loadPointCloud(const std::vector<osg::Vec3>& points)
 {
-    std::vector<osg::Vec4ub> colors(points.size(), osg::Vec4ub(135, 206, 250, 255));
-    loadPointCloud(points, colors);
+    if (points.empty()) return;
+
+    // LeadScan 风格：Vec4Array(float 颜色) + VBO + DYNAMIC
+    osg::ref_ptr<osg::Vec3Array> v = new osg::Vec3Array();
+    osg::ref_ptr<osg::Vec4Array> c = new osg::Vec4Array();
+    v->reserve(points.size());
+    c->reserve(points.size());
+
+    for (size_t i = 0; i < points.size(); ++i) {
+        v->push_back(points[i]);
+        c->push_back(osg::Vec4(0.529f, 0.808f, 0.980f, 1.0f));  // LeadScan 蓝
+    }
+
+    osg::ref_ptr<osg::Geometry> geom = new osg::Geometry();
+    geom->setUseVertexBufferObjects(true);
+    geom->setUseDisplayList(false);
+    geom->setDataVariance(osg::Object::DYNAMIC);
+
+    geom->setVertexArray(v.get());
+    geom->setColorArray(c.get());
+    geom->setColorBinding(osg::Geometry::BIND_PER_VERTEX);
+    geom->addPrimitiveSet(new osg::DrawArrays(osg::PrimitiveSet::POINTS, 0, v->size()));
+
+    osg::ref_ptr<osg::Geode> geode = new osg::Geode();
+    geode->addDrawable(geom.get());
+
+    // Point size 3.0 (LeadScan 风格)
+    osg::ref_ptr<osg::StateSet> ss = geode->getOrCreateStateSet();
+    osg::ref_ptr<osg::Point> pointSize = new osg::Point;
+    pointSize->setSize(3.0f);
+    ss->setAttribute(pointSize);
+
+    m_root->addChild(geode.get());
+
+    // 完全复制校准模式的相机锁定方式
+    osg::BoundingSphere bs = m_root->getBound();
+    if (bs.valid() && bs.radius() > 0 && m_viewer.valid()) {
+        double r = bs.radius();
+        osg::Vec3d ctr(bs.center());
+        osg::Vec3d eye(ctr.x(), ctr.y() - r * 3.0, ctr.z() + r * 0.5);
+        osg::Vec3d up(0, 0, 1);
+
+        double zNear = r * 0.1;
+        double zFar = r * 100.0;
+        const osg::GraphicsContext::Traits* traits = m_gw->getTraits();
+        double aspect = static_cast<double>(traits->width) / static_cast<double>(traits->height);
+        m_viewer->getCamera()->setProjectionMatrixAsPerspective(30.0, aspect, zNear, zFar);
+        m_userProjection = m_viewer->getCamera()->getProjectionMatrix();
+
+        auto* manip = new osgGA::TrackballManipulator();
+        manip->setHomePosition(eye, ctr, up);
+        m_viewer->setCameraManipulator(manip);
+        manip->home(0);
+        m_viewer->frame();
+        osg::Matrix lockedView = m_viewer->getCamera()->getViewMatrix();
+        m_viewer->setCameraManipulator(nullptr);
+        m_viewer->getCamera()->setViewMatrix(lockedView);
+        m_userView = lockedView;
+        m_viewLocked = true;
+    }
 }
 
 void OSGWidget::loadPointCloud(const std::vector<osg::Vec3>& points,
@@ -227,32 +302,38 @@ void OSGWidget::loadPointCloud(const std::vector<osg::Vec3>& points,
 {
     if (points.empty()) return;
 
+    osg::ref_ptr<osg::Vec3Array> v = new osg::Vec3Array();
+    osg::ref_ptr<osg::Vec4Array> c = new osg::Vec4Array();
+    v->reserve(points.size());
+    c->reserve(points.size());
+    for (size_t i = 0; i < points.size(); ++i) {
+        v->push_back(points[i]);
+        if (i < colors.size())
+            c->push_back(osg::Vec4(colors[i].r()/255.0f, colors[i].g()/255.0f,
+                                    colors[i].b()/255.0f, colors[i].a()/255.0f));
+        else
+            c->push_back(osg::Vec4(0.529f, 0.808f, 0.980f, 1.0f));
+    }
+
     osg::ref_ptr<osg::Geometry> geom = new osg::Geometry();
-    osg::ref_ptr<osg::Vec3Array> v = new osg::Vec3Array(points.size());
-    osg::ref_ptr<osg::Vec4ubArray> c = new osg::Vec4ubArray(colors.size());
-
-    for (size_t i = 0; i < points.size(); ++i)
-        (*v)[i] = points[i];
-    for (size_t i = 0; i < colors.size(); ++i)
-        (*c)[i] = colors[i];
-
+    geom->setUseVertexBufferObjects(true);
+    geom->setUseDisplayList(false);
+    geom->setDataVariance(osg::Object::DYNAMIC);
     geom->setVertexArray(v.get());
     geom->setColorArray(c.get());
     geom->setColorBinding(osg::Geometry::BIND_PER_VERTEX);
-    geom->addPrimitiveSet(new osg::DrawArrays(GL_POINTS, 0, points.size()));
+    geom->addPrimitiveSet(new osg::DrawArrays(osg::PrimitiveSet::POINTS, 0, v->size()));
 
     osg::ref_ptr<osg::Geode> geode = new osg::Geode();
     geode->addDrawable(geom.get());
-    geode->getOrCreateStateSet()->setAttribute(new osg::Point(2.0f));
-
+    osg::ref_ptr<osg::StateSet> ss = geode->getOrCreateStateSet();
+    osg::ref_ptr<osg::Point> pointSize = new osg::Point;
+    pointSize->setSize(3.0f);
+    ss->setAttribute(pointSize);
     m_root->addChild(geode.get());
-
-    if (m_viewer.valid() && m_viewer->getCameraManipulator())
-        m_viewer->getCameraManipulator()->home(0);
 }
 
 // ============================================================================
-// 从 PointCloudBuffer 直读快照（ADR7.8）
 // ============================================================================
 void OSGWidget::loadFromPointCloudBuffer(Scanner::data::PointCloudBuffer* pcb) {
     if (!pcb) return;
@@ -653,7 +734,7 @@ void OSGWidget::initializeGL()
     m_viewer->setCameraManipulator(manip);
 
     createAxesIndicator();
-    createCenterOverlay();
+    // createCenterOverlay();  // 暂时禁用 center.png 背景叠加
 
     // CullCallback captures the EXACT rendering matrices for hit-testing
     m_hitTestCallback = new HitTestCullCallback(
@@ -667,9 +748,20 @@ void OSGWidget::resizeGL(int w, int h)
     qDebug("3D viewport size: %d x %d", w * s, h * s);
     m_gw->resized(0, 0, w * s, h * s);
     m_viewer->getCamera()->setViewport(0, 0, w * s, h * s);
-    m_viewer->getCamera()->setProjectionMatrixAsPerspective(45.0,
-        static_cast<double>(w * s) / static_cast<double>(h * s), 1.0, 10000.0);
-    m_userProjection = m_viewer->getCamera()->getProjectionMatrix();
+
+    // 只在视图未锁定时重置投影（锁定时保留 loadMesh/loadPointCloud 设的 near/far）
+    if (!m_viewLocked) {
+        m_viewer->getCamera()->setProjectionMatrixAsPerspective(45.0,
+            static_cast<double>(w * s) / static_cast<double>(h * s), 1.0, 10000.0);
+        m_userProjection = m_viewer->getCamera()->getProjectionMatrix();
+    } else {
+        // 保持 m_userProjection 的 near/far，只更新 aspect
+        double fov, aspect, zNear, zFar;
+        m_userProjection.getPerspective(fov, aspect, zNear, zFar);
+        aspect = static_cast<double>(w * s) / static_cast<double>(h * s);
+        m_viewer->getCamera()->setProjectionMatrixAsPerspective(fov, aspect, zNear, zFar);
+        m_userProjection = m_viewer->getCamera()->getProjectionMatrix();
+    }
 
     if (m_axesCamera.valid())
     {
@@ -679,7 +771,7 @@ void OSGWidget::resizeGL(int w, int h)
         m_axesCamera->setProjectionMatrixAsOrtho(-2.5f, 2.5f, -2.5f, 2.5f, -2.5f, 2.5f);
     }
 
-    createCenterOverlay();
+    // createCenterOverlay();
 }
 
 void OSGWidget::paintGL()
@@ -690,9 +782,12 @@ void OSGWidget::paintGL()
     if (m_gw.valid())
         m_gw->makeCurrent();
 
-    // OSG may corrupt the projection matrix during frame() (e.g., near/far recomputation).
-    // Restore our clean copy so rendering uses the same projection as selection tests.
+    // 恢复投影矩阵（OSG 内部可能在 frame() 中修改）
     m_viewer->getCamera()->setProjectionMatrix(m_userProjection);
+
+    // 恢复锁定的视图矩阵
+    if (m_viewLocked)
+        m_viewer->getCamera()->setViewMatrix(m_userView);
 
     updateAxesView();
 
@@ -1396,4 +1491,235 @@ void OSGWidget::createCenterOverlay()
     osg::Group* sceneRoot = m_viewer->getSceneData()->asGroup();
     if (sceneRoot)
         sceneRoot->addChild(m_centerOverlayCamera.get());
+}
+
+// ============================================================================
+// LeadScan 移植：带法线的动态点云（VBO + DYNAMIC）
+// ============================================================================
+void OSGWidget::loadPointCloudWithNormals(const std::vector<osg::Vec3>& points,
+                                          const std::vector<osg::Vec3>& normals,
+                                          const osg::Vec4& color)
+{
+    if (points.empty()) return;
+
+    // 首次创建
+    if (!m_cloudRoot) {
+        m_cloudRoot = new osg::Group;
+        m_cloudGeode = new osg::Geode;
+        m_cloudGeom = new osg::Geometry;
+        m_cloudGeom->setUseVertexBufferObjects(true);
+        m_cloudGeom->setUseDisplayList(false);
+        m_cloudGeom->setDataVariance(osg::Object::DYNAMIC);
+        m_cloudGeode->addDrawable(m_cloudGeom);
+        m_cloudRoot->addChild(m_cloudGeode);
+        m_root->addChild(m_cloudRoot);
+
+        // 点大小
+        osg::ref_ptr<osg::Point> pointSize = new osg::Point;
+        pointSize->setSize(3.0f);
+        m_cloudRoot->getOrCreateStateSet()->setAttribute(pointSize);
+
+        m_cloudCoords = new osg::Vec3Array;
+        m_cloudNormals = new osg::Vec3Array;
+        m_cloudColors = new osg::Vec4Array;
+    }
+
+    // 设置数据
+    m_cloudCoords->assign(points.begin(), points.end());
+    m_cloudColors->resize(points.size(), color);
+
+    m_cloudGeom->setVertexArray(m_cloudCoords);
+    m_cloudGeom->setColorArray(m_cloudColors);
+    m_cloudGeom->setColorBinding(osg::Geometry::BIND_PER_VERTEX);
+
+    if (normals.size() == points.size()) {
+        m_cloudNormals->assign(normals.begin(), normals.end());
+        m_cloudGeom->setNormalArray(m_cloudNormals);
+        m_cloudGeom->setNormalBinding(osg::Geometry::BIND_PER_VERTEX);
+    }
+
+    m_cloudGeom->setPrimitiveSet(0, new osg::DrawArrays(osg::DrawArrays::POINTS, 0, (int)points.size()));
+    m_cloudGeom->setInitialBound(osg::BoundingBox(
+        osg::Vec3(-100, -100, -100), osg::Vec3(100, 100, 100)));
+
+    // 自动相机
+    autoFitCamera();
+}
+
+// ============================================================================
+// LeadScan 移植：加载网格文件（STL/OBJ，带光照材质）
+// ============================================================================
+bool OSGWidget::loadMesh(const QString& filepath)
+{
+    QByteArray ba = filepath.toUtf8();
+    const char* cpath = ba.constData();
+
+    FILE* lf = fopen("E:/workfold/framework/build/mesh_debug.log", "a");
+    if (lf) { fprintf(lf, "loadMesh: %s\n", cpath); fclose(lf); }
+
+    // 用 file_io 解析
+    file_io::MeshData mesh;
+    std::string spath(cpath);
+    if (!file_io::importMesh(spath, mesh) || mesh.vertices.empty()) {
+        if (lf) { fprintf(lf, "  importMesh failed\n"); fclose(lf); }
+        return false;
+    }
+
+    if (lf) { fprintf(lf, "  verts=%zu indices=%zu\n", mesh.vertices.size(), mesh.indices.size()); fclose(lf); }
+
+    osg::ref_ptr<osg::Vec3Array> verts = new osg::Vec3Array;
+    osg::ref_ptr<osg::Vec3Array> norms = new osg::Vec3Array;
+    verts->reserve(mesh.vertices.size());
+    norms->reserve(mesh.vertices.size());
+
+    if (!mesh.indices.empty()) {
+        // 索引模式
+        for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
+            const auto& p0 = mesh.vertices[mesh.indices[i]];
+            const auto& p1 = mesh.vertices[mesh.indices[i+1]];
+            const auto& p2 = mesh.vertices[mesh.indices[i+2]];
+            osg::Vec3 nm = (p1 - p0) ^ (p2 - p0); nm.normalize();
+            verts->push_back(p0); verts->push_back(p1); verts->push_back(p2);
+            norms->push_back(nm); norms->push_back(nm); norms->push_back(nm);
+        }
+    } else {
+        for (const auto& p : mesh.vertices) verts->push_back(p);
+    }
+
+    if (verts->empty()) return false;
+
+    osg::ref_ptr<osg::Geometry> geom = new osg::Geometry;
+    geom->setUseVertexBufferObjects(true);
+    geom->setVertexArray(verts);
+    geom->setNormalArray(norms, osg::Array::BIND_PER_VERTEX);
+    geom->addPrimitiveSet(new osg::DrawArrays(GL_TRIANGLES, 0, (int)verts->size()));
+
+    // 光照材质
+    osg::ref_ptr<osg::StateSet> ss = geom->getOrCreateStateSet();
+    ss->setMode(GL_NORMALIZE, osg::StateAttribute::ON);
+    ss->setMode(GL_LIGHTING, osg::StateAttribute::ON);
+    ss->setMode(GL_LIGHT0, osg::StateAttribute::ON);
+    osg::ref_ptr<osg::LightModel> lm = new osg::LightModel;
+    lm->setTwoSided(true);
+    ss->setAttributeAndModes(lm);
+    osg::ref_ptr<osg::Material> mat = new osg::Material;
+    mat->setDiffuse(osg::Material::FRONT_AND_BACK, osg::Vec4(0.75f, 0.75f, 0.75f, 1.0f));
+    mat->setAmbient(osg::Material::FRONT_AND_BACK, osg::Vec4(0.75f, 0.75f, 0.75f, 1.0f));
+    mat->setSpecular(osg::Material::FRONT_AND_BACK, osg::Vec4(0.3f, 0.3f, 0.3f, 1.0f));
+    mat->setShininess(osg::Material::FRONT_AND_BACK, 100.0f);
+    ss->setAttributeAndModes(mat);
+
+    osg::ref_ptr<osg::Geode> geode = new osg::Geode;
+    geode->addDrawable(geom);
+    m_root->addChild(geode);
+
+    // 完全复制校准模式的相机锁定方式
+    osg::BoundingSphere bs = m_root->getBound();
+    if (bs.valid() && bs.radius() > 0 && m_viewer.valid()) {
+        double r = bs.radius();
+        osg::Vec3d c(bs.center());
+        osg::Vec3d eye(c.x(), c.y() - r * 3.0, c.z() + r * 0.5);
+        osg::Vec3d up(0, 0, 1);
+
+        // 投影
+        double zNear = r * 0.1;
+        double zFar = r * 100.0;
+        const osg::GraphicsContext::Traits* traits = m_gw->getTraits();
+        double aspect = static_cast<double>(traits->width) / static_cast<double>(traits->height);
+        m_viewer->getCamera()->setProjectionMatrixAsPerspective(30.0, aspect, zNear, zFar);
+        m_userProjection = m_viewer->getCamera()->getProjectionMatrix();
+
+        // 和校准完全一样：manipulator → home → frame → 锁定
+        auto* manip = new osgGA::TrackballManipulator();
+        manip->setHomePosition(eye, c, up);
+        m_viewer->setCameraManipulator(manip);
+        manip->home(0);
+        m_viewer->frame();
+        osg::Matrix lockedView = m_viewer->getCamera()->getViewMatrix();
+        m_viewer->setCameraManipulator(nullptr);
+        m_viewer->getCamera()->setViewMatrix(lockedView);
+        m_userView = lockedView;
+        m_viewLocked = true;
+    }
+
+    return true;
+}
+
+// ============================================================================
+// LeadScan 移植：加载标志点
+// ============================================================================
+void OSGWidget::loadMarkerPoints(const std::vector<osg::Vec3>& markers,
+                                 const osg::Vec4& color)
+{
+    if (markers.empty()) return;
+
+    if (!m_markerRoot) {
+        m_markerRoot = new osg::Group;
+        m_markerGeode = new osg::Geode;
+        m_markerGeom = new osg::Geometry;
+        m_markerGeom->setUseVertexBufferObjects(true);
+        m_markerGeom->setUseDisplayList(false);
+        m_markerGeom->setDataVariance(osg::Object::DYNAMIC);
+        m_markerGeode->addDrawable(m_markerGeom);
+        m_markerRoot->addChild(m_markerGeode);
+        m_root->addChild(m_markerRoot);
+
+        osg::ref_ptr<osg::Point> pointSize = new osg::Point;
+        pointSize->setSize(5.0f);  // 标志点更大
+        m_markerRoot->getOrCreateStateSet()->setAttribute(pointSize);
+
+        m_markerCoords = new osg::Vec3Array;
+        m_markerColors = new osg::Vec4Array;
+    }
+
+    m_markerCoords->assign(markers.begin(), markers.end());
+    m_markerColors->resize(markers.size(), color);
+    m_markerGeom->setVertexArray(m_markerCoords);
+    m_markerGeom->setColorArray(m_markerColors);
+    m_markerGeom->setColorBinding(osg::Geometry::BIND_PER_VERTEX);
+    m_markerGeom->setPrimitiveSet(0, new osg::DrawArrays(osg::DrawArrays::POINTS, 0, (int)markers.size()));
+}
+
+// ============================================================================
+// LeadScan 移植：自动相机定位
+// ============================================================================
+void OSGWidget::autoFitCamera()
+{
+    if (!m_viewer || !m_root) return;
+
+    osg::BoundingSphere bs = m_root->getBound();
+    if (!bs.valid() || bs.radius() <= 0) return;
+
+    // LeadScan 风格定位
+    double radius = bs.radius();
+    double viewDistance = radius;  // LeadScan 用 radius，不是 2.5*radius
+    osg::Vec3d up(0.0, 0.0, 1.0);
+    osg::Vec3d viewDirection(0.0, -1.0, 0.5);
+    viewDirection.normalize();
+    osg::Vec3d center = bs.center();
+    center.y() -= radius;  // LeadScan 风格 Y 偏移
+    osg::Vec3d eye = center + viewDirection * viewDistance;
+
+    // 更新投影 near/far
+    double zNear = radius * 0.01;
+    double zFar = radius * 100.0;
+    if (zNear < 0.001) zNear = 0.001;
+
+    const osg::GraphicsContext::Traits* traits = m_gw->getTraits();
+    double aspect = static_cast<double>(traits->width) / static_cast<double>(traits->height);
+    m_viewer->getCamera()->setProjectionMatrixAsPerspective(30.0, aspect, zNear, zFar);
+    m_userProjection = m_viewer->getCamera()->getProjectionMatrix();
+
+    // 设置 manipulator
+    osgGA::CameraManipulator* manip = m_viewer->getCameraManipulator();
+    if (manip) {
+        manip->setNode(m_root.get());
+        manip->setHomePosition(eye, center, up);
+        manip->home(0.0);
+    }
+
+    // 直接设置相机
+    m_viewer->getCamera()->setViewMatrixAsLookAt(eye, center, up);
+    m_viewer->frame();
+    update();
 }

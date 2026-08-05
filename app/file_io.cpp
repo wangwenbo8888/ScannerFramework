@@ -17,8 +17,10 @@ bool importPointCloud(const std::string& filepath,
                      std::vector<osg::Vec3>& points,
                      std::vector<osg::Vec3>* normals)
 {
+    if (filepath.empty()) return false;
     // 根据扩展名分派
-    auto ext = filepath.substr(filepath.find_last_of('.') + 1);
+    size_t dotPos = filepath.find_last_of('.');
+    std::string ext = (dotPos != std::string::npos) ? filepath.substr(dotPos + 1) : "";
     if (ext == "ply") return importPLY(filepath, points, normals);
     if (ext == "xyz" || ext == "txt") return importXYZ(filepath, points, normals);
     if (ext == "pcd") return importPCD(filepath, points, normals);
@@ -30,7 +32,8 @@ bool exportPointCloud(const std::string& filepath,
                       const std::vector<osg::Vec3>& points,
                       const std::vector<osg::Vec3>* normals)
 {
-    auto ext = filepath.substr(filepath.find_last_of('.') + 1);
+    size_t dotPos = filepath.find_last_of('.');
+    auto ext = (dotPos != std::string::npos) ? filepath.substr(dotPos + 1) : std::string();
     if (ext == "ply") return exportPLY(filepath, points, normals);
     if (ext == "pcd") return exportPCD(filepath, points, normals);
     // 默认 xyz
@@ -42,20 +45,25 @@ bool importXYZ(const std::string& filepath,
                std::vector<osg::Vec3>& points,
                std::vector<osg::Vec3>* normals)
 {
-    std::ifstream f(filepath);
-    if (!f.is_open()) return false;
+    FILE* f = fopen(filepath.c_str(), "r");
+    if (!f) return false;
     points.clear();
     if (normals) normals->clear();
-    double x, y, z, nx, ny, nz;
-    std::string line;
-    while (std::getline(f, line)) {
-        std::istringstream ss(line);
-        if (ss >> x >> y >> z) {
-            points.emplace_back((float)x, (float)y, (float)z);
-            if (normals && (ss >> nx >> ny >> nz))
-                normals->emplace_back((float)nx, (float)ny, (float)nz);
+    points.reserve(100000);
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+        float x, y, z;
+        int n = sscanf(line, "%f %f %f", &x, &y, &z);
+        if (n >= 3) {
+            points.push_back(osg::Vec3(x, y, z));
+            if (normals) {
+                float nx, ny, nz;
+                if (sscanf(line, "%*f %*f %*f %f %f %f", &nx, &ny, &nz) == 3)
+                    normals->push_back(osg::Vec3(nx, ny, nz));
+            }
         }
     }
+    fclose(f);
     return !points.empty();
 }
 
@@ -223,9 +231,10 @@ bool exportPCD(const std::string& filepath,
 // 网格
 // ============================================================================
 
-bool importMesh(const std::string& filepath, MeshData& mesh)
+bool importMesh(std::string filepath, MeshData& mesh)
 {
-    auto ext = filepath.substr(filepath.find_last_of('.') + 1);
+    size_t dotPos = filepath.find_last_of('.');
+    auto ext = (dotPos != std::string::npos) ? filepath.substr(dotPos + 1) : std::string();
     if (ext == "stl") return importSTL(filepath, mesh);
     if (ext == "obj") return importOBJ(filepath, mesh);
     return false;
@@ -233,16 +242,53 @@ bool importMesh(const std::string& filepath, MeshData& mesh)
 
 bool exportMesh(const std::string& filepath, const MeshData& mesh)
 {
-    auto ext = filepath.substr(filepath.find_last_of('.') + 1);
+    size_t dotPos = filepath.find_last_of('.');
+    auto ext = (dotPos != std::string::npos) ? filepath.substr(dotPos + 1) : std::string();
     if (ext == "stl") return exportSTL(filepath, mesh);
     if (ext == "obj") return exportOBJ(filepath, mesh);
     return false;
 }
 
-// --- STL (binary) ---
+// --- STL (auto-detect ASCII or binary) ---
 bool importSTL(const std::string& filepath, MeshData& mesh)
 {
     FILE* f = fopen(filepath.c_str(), "rb");
+    if (!f) return false;
+
+    // 读前 512 字节判断 ASCII/Binary
+    char buf[512] = {0};
+    size_t nread = fread(buf, 1, 512, f);
+    fclose(f);
+
+    bool isAscii = false;
+    // ASCII STL 以 "solid" 开头
+    if (nread >= 5 && (strncmp(buf, "solid", 5) == 0)) {
+        // 进一步检查：ASCII STL 通常含 "facet" 关键字
+        if (strstr(buf, "facet") || strstr(buf, "normal"))
+            isAscii = true;
+    }
+
+    if (isAscii)
+    {
+        std::ifstream ifs(filepath);
+        if (!ifs.is_open()) return false;
+        mesh.vertices.clear();
+        mesh.indices.clear();
+        std::string tok;
+        while (ifs >> tok) {
+            if (tok == "vertex") {
+                float x, y, z;
+                ifs >> x >> y >> z;
+                unsigned int idx = (unsigned int)mesh.vertices.size();
+                mesh.vertices.emplace_back(x, y, z);
+                mesh.indices.push_back(idx);
+            }
+        }
+        return !mesh.vertices.empty();
+    }
+
+    // Binary STL
+    f = fopen(filepath.c_str(), "rb");
     if (!f) return false;
 
     char header[80];

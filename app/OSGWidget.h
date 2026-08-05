@@ -33,6 +33,21 @@ public:
     void loadPointCloud(const std::vector<osg::Vec3>& points);
     void loadPointCloud(const std::vector<osg::Vec3>& points,
                         const std::vector<osg::Vec4ub>& colors);
+
+    // LeadScan 移植：带法线的动态点云（VBO + DYNAMIC）
+    void loadPointCloudWithNormals(const std::vector<osg::Vec3>& points,
+                                  const std::vector<osg::Vec3>& normals,
+                                  const osg::Vec4& color = osg::Vec4(0.0f, 0.604f, 0.804f, 1.0f));
+
+    // LeadScan 移植：加载网格文件（STL/OBJ，带光照材质）
+    bool loadMesh(const QString& filepath);
+
+    // LeadScan 移植：加载标志点
+    void loadMarkerPoints(const std::vector<osg::Vec3>& markers,
+                          const osg::Vec4& color = osg::Vec4(1.0f, 0.0f, 0.0f, 1.0f));
+
+    // LeadScan 移植：自动相机定位到场景包围球
+    void autoFitCamera();
     bool loadTestData(int numPoints);
     bool loadTestDataFromPLY(const std::string& filepath, int numPoints);
 
@@ -146,6 +161,8 @@ private:
     // Our own copy of the projection matrix — OSG internals can corrupt the camera's
     // projection matrix during frame(), so we restore from this copy before each frame.
     osg::Matrix m_userProjection;
+    osg::Matrix m_userView;        // 锁定的视图矩阵（loadPointCloud 时设置）
+    bool m_viewLocked = false;     // 是否锁定视图
 
     // Camera state captured right after frame() — the actual matrices used for rendering.
     osg::Matrix m_camViewAfterFrame;
@@ -218,4 +235,20 @@ private:
     // Center overlay (two circles + text)
     osg::ref_ptr<osg::Camera> m_centerOverlayCamera;
     bool m_centerOverlayVisible = true;
+
+    // LeadScan 移植：动态点云几何
+    osg::ref_ptr<osg::Group> m_cloudRoot;       // 点云根节点
+    osg::ref_ptr<osg::Group> m_markerRoot;      // 标志点根节点
+    osg::ref_ptr<osg::Geode> m_cloudGeode;      // 点云叶节点
+    osg::ref_ptr<osg::Geode> m_markerGeode;     // 标志点叶节点
+    osg::ref_ptr<osg::Geometry> m_cloudGeom;    // 点云几何（DYNAMIC）
+    osg::ref_ptr<osg::Geometry> m_markerGeom;   // 标志点几何
+    osg::ref_ptr<osg::Vec3Array> m_cloudCoords;
+    osg::ref_ptr<osg::Vec3Array> m_cloudNormals;
+    osg::ref_ptr<osg::Vec4Array> m_cloudColors;
+    osg::ref_ptr<osg::Vec3Array> m_markerCoords;
+    osg::ref_ptr<osg::Vec4Array> m_markerColors;
+
+    // 坐标轴
+    osg::ref_ptr<osg::Geode> m_axesGeode;
 };

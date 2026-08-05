@@ -36,7 +36,7 @@ struct MeshData {
     std::vector<osg::Vec3> normals;     // 逐顶点法线（可选）
 };
 
-bool importMesh(const std::string& filepath, MeshData& mesh);
+bool importMesh(std::string filepath, MeshData& mesh);
 bool exportMesh(const std::string& filepath, const MeshData& mesh);
 bool importSTL(const std::string& filepath, MeshData& mesh);
 bool exportSTL(const std::string& filepath, const MeshData& mesh);
