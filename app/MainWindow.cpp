@@ -28,6 +28,7 @@
 #include <QMenu>
 #include <QFileDialog>
 #include <QStatusBar>
+#include <QProgressDialog>
 #include <cstdio>
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -419,7 +420,7 @@ void MainWindow::onScanClicked()
     if (m_3dView) {
         m_3dView->clearScene();
         m_3dView->setCenterOverlayVisible(true);
-        m_3dView->viewer()->getCamera()->setClearColor(osg::Vec4(0.878f, 0.878f, 0.878f, 1.0f));
+        m_3dView->viewer()->getCamera()->setClearColor(osg::Vec4(0.412f, 0.412f, 0.412f, 1.0f));
         auto* manip = new osgGA::TrackballManipulator();
         m_3dView->setCameraManipulator(manip);
         manip->home(0);
@@ -794,6 +795,17 @@ QWidget *MainWindow::createToolBar()
                     if (path.isEmpty()) return;
                     QByteArray ba = path.toUtf8();
                     std::string spath(ba.constData(), ba.size());
+
+                    QProgressDialog progress(QStringLiteral("Importing point cloud..."), QString(), 0, 0, this);
+                    progress.setWindowModality(Qt::WindowModal);
+                    progress.setMinimumDuration(0);
+                    progress.setCancelButton(nullptr);
+                    progress.setRange(0, 0);
+                    progress.setAutoClose(false);
+                    progress.setAutoReset(false);
+                    progress.show();
+                    QApplication::processEvents();
+
                     std::vector<osg::Vec3> points;
                     bool ok = file_io::importPointCloud(spath, points);
 
@@ -828,19 +840,28 @@ QWidget *MainWindow::createToolBar()
                         if (m_3dView) {
                             m_3dView->setCenterOverlayVisible(false);
                             m_3dView->loadPointCloud(points);
-                            m_3dView->autoFitCamera();
-                            m_3dView->viewer()->frame();
                             m_3dView->update();
                         }
                     } else {
                         statusBar()->showMessage("Import failed");
                         QMessageBox::warning(this, "Import", "Failed to read point cloud. Check file format.");
                     }
+                    progress.close();
                 });
                 menu.addAction(QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe7\xbd\x91\xe6\xa0\xbc"), [this]() {
                     QString path = QFileDialog::getOpenFileName(this, QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe7\xbd\x91\xe6\xa0\xbc"), "", "Mesh (*.stl *.obj);;All Files (*.*)");
                     if (path.isEmpty()) return;
                     if (m_3dView) {
+                        QProgressDialog progress(QStringLiteral("Importing mesh..."), QString(), 0, 0, this);
+                        progress.setWindowModality(Qt::WindowModal);
+                        progress.setMinimumDuration(0);
+                        progress.setCancelButton(nullptr);
+                        progress.setRange(0, 0);
+                        progress.setAutoClose(false);
+                        progress.setAutoReset(false);
+                        progress.show();
+                        QApplication::processEvents();
+
                         m_3dView->clearScene();
                         if (m_3dView->loadMesh(path))
                             statusBar()->showMessage(QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe7\xbd\x91\xe6\xa0\xbc\xe6\x88\x90\xe5\x8a\x9f: ") + path);
@@ -848,6 +869,8 @@ QWidget *MainWindow::createToolBar()
                             statusBar()->showMessage(QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe7\xbd\x91\xe6\xa0\xbc\xe5\xa4\xb1\xe8\xb4\xa5"));
                             QMessageBox::warning(this, "Import", "Failed to read mesh.");
                         }
+                        m_3dView->update();
+                        progress.close();
                     }
                 });
                 menu.addAction(QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe5\xb7\xa5\xe7\xa8\x8b\xe6\x96\x87\xe4\xbb\xb6"), [this]() {
@@ -898,7 +921,8 @@ QWidget *MainWindow::createToolBar()
         }
 
         // 标点扫描/面片扫描/点云扫描/双扫描/切片扫描：切换回默认界面
-        if (i == 0 || i == 2 || i == 3 || i == 4 || i == 5) {
+        // 注意：i==0 是"文件管理/导入"按钮，只开菜单，不能在这里 clearScene（否则导入后被清空）
+        if (i == 2 || i == 3 || i == 4 || i == 5) {
             connect(btn, &QPushButton::clicked, this, [this]() {
                 if (m_calibBoard2D) m_calibBoard2D->hide();
                 // 隐藏左右、前后彩条
@@ -909,7 +933,7 @@ QWidget *MainWindow::createToolBar()
                 if (m_3dView) {
                     m_3dView->clearScene();
                     m_3dView->setCenterOverlayVisible(true);
-                    m_3dView->viewer()->getCamera()->setClearColor(osg::Vec4(0.878f, 0.878f, 0.878f, 1.0f));
+                    m_3dView->viewer()->getCamera()->setClearColor(osg::Vec4(0.412f, 0.412f, 0.412f, 1.0f));
                     auto* manip = new osgGA::TrackballManipulator();
                     m_3dView->setCameraManipulator(manip);
                     manip->home(0);

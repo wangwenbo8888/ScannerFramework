@@ -284,16 +284,17 @@ void OSGWidget::loadPointCloud(const std::vector<osg::Vec3>& points)
         m_viewer->getCamera()->setProjectionMatrixAsPerspective(30.0, aspect, zNear, zFar);
         m_userProjection = m_viewer->getCamera()->getProjectionMatrix();
 
-        auto* manip = new osgGA::TrackballManipulator();
-        manip->setHomePosition(eye, ctr, up);
-        m_viewer->setCameraManipulator(manip);
-        manip->home(0);
-        m_viewer->frame();
-        osg::Matrix lockedView = m_viewer->getCamera()->getViewMatrix();
         m_viewer->setCameraManipulator(nullptr);
-        m_viewer->getCamera()->setViewMatrix(lockedView);
-        m_userView = lockedView;
+        m_viewer->getCamera()->setViewMatrixAsLookAt(eye, ctr, up);
+        m_userView = m_viewer->getCamera()->getViewMatrix();
         m_viewLocked = true;
+
+        FILE* rlog = fopen("E:/workfold/framework/build/render_debug.log", "a");
+        if (rlog) {
+            fprintf(rlog, "loadPointCloud: this=%p r=%.1f center=(%.1f,%.1f,%.1f) eye=(%.1f,%.1f,%.1f) zN=%.2f zF=%.1f locked=%d rootKids=%d\n",
+                    (void*)this, r, ctr.x(), ctr.y(), ctr.z(), eye.x(), eye.y(), eye.z(), zNear, zFar, m_viewLocked ? 1 : 0, (int)m_root->getNumChildren());
+            fclose(rlog);
+        }
     }
 }
 
@@ -710,7 +711,7 @@ void OSGWidget::initializeGL()
     camera->setProjectionMatrixAsPerspective(45.0,
         static_cast<double>(w) / static_cast<double>(h), 1.0, 10000.0);
     m_userProjection = camera->getProjectionMatrix();
-    camera->setClearColor(osg::Vec4(0.878f, 0.878f, 0.878f, 1.0f));
+    camera->setClearColor(osg::Vec4(0.412f, 0.412f, 0.412f, 1.0f));
 
     m_gw = new osgViewer::GraphicsWindowEmbedded(0, 0, w, h);
     camera->setGraphicsContext(m_gw.get());
@@ -1555,7 +1556,7 @@ bool OSGWidget::loadMesh(const QString& filepath)
     const char* cpath = ba.constData();
 
     FILE* lf = fopen("E:/workfold/framework/build/mesh_debug.log", "a");
-    if (lf) { fprintf(lf, "loadMesh: %s\n", cpath); fclose(lf); }
+    if (lf) fprintf(lf, "loadMesh: %s\n", cpath);
 
     // 用 file_io 解析
     file_io::MeshData mesh;
@@ -1594,17 +1595,17 @@ bool OSGWidget::loadMesh(const QString& filepath)
     geom->setNormalArray(norms, osg::Array::BIND_PER_VERTEX);
     geom->addPrimitiveSet(new osg::DrawArrays(GL_TRIANGLES, 0, (int)verts->size()));
 
-    // 光照材质
+    // 光照材质（参照 LEADSCAN K2 loadModel：GL_LIGHT1 + 双面光照 + LeadScan 蓝材质）
     osg::ref_ptr<osg::StateSet> ss = geom->getOrCreateStateSet();
     ss->setMode(GL_NORMALIZE, osg::StateAttribute::ON);
     ss->setMode(GL_LIGHTING, osg::StateAttribute::ON);
-    ss->setMode(GL_LIGHT0, osg::StateAttribute::ON);
+    ss->setMode(GL_LIGHT1, osg::StateAttribute::ON);
     osg::ref_ptr<osg::LightModel> lm = new osg::LightModel;
     lm->setTwoSided(true);
     ss->setAttributeAndModes(lm);
     osg::ref_ptr<osg::Material> mat = new osg::Material;
-    mat->setDiffuse(osg::Material::FRONT_AND_BACK, osg::Vec4(0.75f, 0.75f, 0.75f, 1.0f));
-    mat->setAmbient(osg::Material::FRONT_AND_BACK, osg::Vec4(0.75f, 0.75f, 0.75f, 1.0f));
+    mat->setDiffuse(osg::Material::FRONT_AND_BACK, osg::Vec4(0.529f, 0.808f, 0.980f, 1.0f));
+    mat->setAmbient(osg::Material::FRONT_AND_BACK, osg::Vec4(0.529f, 0.808f, 0.980f, 1.0f));
     mat->setSpecular(osg::Material::FRONT_AND_BACK, osg::Vec4(0.3f, 0.3f, 0.3f, 1.0f));
     mat->setShininess(osg::Material::FRONT_AND_BACK, 100.0f);
     ss->setAttributeAndModes(mat);
@@ -1613,7 +1614,7 @@ bool OSGWidget::loadMesh(const QString& filepath)
     geode->addDrawable(geom);
     m_root->addChild(geode);
 
-    // 完全复制校准模式的相机锁定方式
+    // 相机定位并锁定视图
     osg::BoundingSphere bs = m_root->getBound();
     if (bs.valid() && bs.radius() > 0 && m_viewer.valid()) {
         double r = bs.radius();
@@ -1621,7 +1622,6 @@ bool OSGWidget::loadMesh(const QString& filepath)
         osg::Vec3d eye(c.x(), c.y() - r * 3.0, c.z() + r * 0.5);
         osg::Vec3d up(0, 0, 1);
 
-        // 投影
         double zNear = r * 0.1;
         double zFar = r * 100.0;
         const osg::GraphicsContext::Traits* traits = m_gw->getTraits();
@@ -1629,16 +1629,9 @@ bool OSGWidget::loadMesh(const QString& filepath)
         m_viewer->getCamera()->setProjectionMatrixAsPerspective(30.0, aspect, zNear, zFar);
         m_userProjection = m_viewer->getCamera()->getProjectionMatrix();
 
-        // 和校准完全一样：manipulator → home → frame → 锁定
-        auto* manip = new osgGA::TrackballManipulator();
-        manip->setHomePosition(eye, c, up);
-        m_viewer->setCameraManipulator(manip);
-        manip->home(0);
-        m_viewer->frame();
-        osg::Matrix lockedView = m_viewer->getCamera()->getViewMatrix();
         m_viewer->setCameraManipulator(nullptr);
-        m_viewer->getCamera()->setViewMatrix(lockedView);
-        m_userView = lockedView;
+        m_viewer->getCamera()->setViewMatrixAsLookAt(eye, c, up);
+        m_userView = m_viewer->getCamera()->getViewMatrix();
         m_viewLocked = true;
     }
 

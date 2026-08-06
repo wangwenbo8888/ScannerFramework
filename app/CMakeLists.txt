@@ -1,6 +1,6 @@
 set(CMAKE_AUTOMOC ON)
-set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
+set(CMAKE_AUTORCC OFF)
 
 set(APP_SOURCES
     main.cpp
@@ -25,11 +25,17 @@ set(APP_SOURCES
     file_io.h
 )
 
-set(APP_RESOURCES
-    resources.qrc
+set(GENERATED_QRC_CPP ${CMAKE_CURRENT_BINARY_DIR}/qrc_resources.cpp)
+add_custom_command(
+    OUTPUT ${GENERATED_QRC_CPP}
+    COMMAND "C:/Qt/Qt5.15.2/5.15.2/msvc2019_64/bin/rcc.exe" -name resources
+            -o "${GENERATED_QRC_CPP}" "${CMAKE_CURRENT_SOURCE_DIR}/resources.qrc"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/resources.qrc"
+    COMMENT "Generating qrc_resources.cpp"
+    VERBATIM
 )
 
-add_executable(scan_demo ${APP_SOURCES} ${APP_RESOURCES})
+add_executable(scan_demo ${APP_SOURCES} ${GENERATED_QRC_CPP})
 
 target_include_directories(scan_demo PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
