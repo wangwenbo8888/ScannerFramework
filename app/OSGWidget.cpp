@@ -269,7 +269,7 @@ void OSGWidget::loadPointCloud(const std::vector<osg::Vec3>& points)
 
     m_root->addChild(geode.get());
 
-    // 完全复制校准模式的相机锁定方式
+    // 相机定位到数据，并保留 manipulator 供旋转/缩放操作
     osg::BoundingSphere bs = m_root->getBound();
     if (bs.valid() && bs.radius() > 0 && m_viewer.valid()) {
         double r = bs.radius();
@@ -284,17 +284,12 @@ void OSGWidget::loadPointCloud(const std::vector<osg::Vec3>& points)
         m_viewer->getCamera()->setProjectionMatrixAsPerspective(30.0, aspect, zNear, zFar);
         m_userProjection = m_viewer->getCamera()->getProjectionMatrix();
 
-        m_viewer->setCameraManipulator(nullptr);
-        m_viewer->getCamera()->setViewMatrixAsLookAt(eye, ctr, up);
-        m_userView = m_viewer->getCamera()->getViewMatrix();
-        m_viewLocked = true;
-
-        FILE* rlog = fopen("E:/workfold/framework/build/render_debug.log", "a");
-        if (rlog) {
-            fprintf(rlog, "loadPointCloud: this=%p r=%.1f center=(%.1f,%.1f,%.1f) eye=(%.1f,%.1f,%.1f) zN=%.2f zF=%.1f locked=%d rootKids=%d\n",
-                    (void*)this, r, ctr.x(), ctr.y(), ctr.z(), eye.x(), eye.y(), eye.z(), zNear, zFar, m_viewLocked ? 1 : 0, (int)m_root->getNumChildren());
-            fclose(rlog);
-        }
+        m_viewLocked = false;
+        osg::ref_ptr<osgGA::TrackballManipulator> manip = new osgGA::TrackballManipulator;
+        manip->setAllowThrow(false);
+        manip->setHomePosition(eye, ctr, up, false);
+        m_viewer->setCameraManipulator(manip);
+        manip->home(0);
     }
 }
 
@@ -750,13 +745,8 @@ void OSGWidget::resizeGL(int w, int h)
     m_gw->resized(0, 0, w * s, h * s);
     m_viewer->getCamera()->setViewport(0, 0, w * s, h * s);
 
-    // 只在视图未锁定时重置投影（锁定时保留 loadMesh/loadPointCloud 设的 near/far）
-    if (!m_viewLocked) {
-        m_viewer->getCamera()->setProjectionMatrixAsPerspective(45.0,
-            static_cast<double>(w * s) / static_cast<double>(h * s), 1.0, 10000.0);
-        m_userProjection = m_viewer->getCamera()->getProjectionMatrix();
-    } else {
-        // 保持 m_userProjection 的 near/far，只更新 aspect
+    // 保持当前投影的 fov/near/far，仅更新 aspect（避免旋转操作时 resize 重置视角）
+    {
         double fov, aspect, zNear, zFar;
         m_userProjection.getPerspective(fov, aspect, zNear, zFar);
         aspect = static_cast<double>(w * s) / static_cast<double>(h * s);
@@ -1629,10 +1619,12 @@ bool OSGWidget::loadMesh(const QString& filepath)
         m_viewer->getCamera()->setProjectionMatrixAsPerspective(30.0, aspect, zNear, zFar);
         m_userProjection = m_viewer->getCamera()->getProjectionMatrix();
 
-        m_viewer->setCameraManipulator(nullptr);
-        m_viewer->getCamera()->setViewMatrixAsLookAt(eye, c, up);
-        m_userView = m_viewer->getCamera()->getViewMatrix();
-        m_viewLocked = true;
+        m_viewLocked = false;
+        osg::ref_ptr<osgGA::TrackballManipulator> manip = new osgGA::TrackballManipulator;
+        manip->setAllowThrow(false);
+        manip->setHomePosition(eye, c, up, false);
+        m_viewer->setCameraManipulator(manip);
+        manip->home(0);
     }
 
     return true;
