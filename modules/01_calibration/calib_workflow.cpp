@@ -4,6 +4,22 @@
 #include "extrinsic_calib_cpu.h"
 #include "stereo_rectify_cpu.h"
 #include "stereo_rectify_temp_table_cpu.h"
+#include "intrinsic_compensate_cpu.h"
+#include "extrinsic_compensate_cpu.h"
+
+// 阶段4 激光标定算子
+#include "mask_extract_cuda.h"
+#include "region_analyze_cuda.h"
+#include "laser_label_cuda.h"
+#include "steger_extract_cuda.h"
+#include "undistort_points_cuda.h"
+#include "epipolar_interp_cuda.h"
+#include "laser_match_cuda.h"
+#include "laser_reconstruct_cuda.h"
+#include "projector_joint_calib.h"
+
+#include <opencv2/cudaimgproc.hpp>
+#include <spdlog/spdlog.h>
 
 #include <nlohmann/json.hpp>
 #include <fstream>
@@ -136,6 +152,85 @@ CameraCalibResult runCameraCalibration(
     result.validRoiL = rectifyResult.validRoiLeft;
     result.validRoiR = rectifyResult.validRoiRight;
 
+    report(95, "rectify done");
+
+    // ===== 4. 温度补偿表（可选）=====
+    if (input.cte > 0 && input.tempRangeMax > input.tempRangeMin) {
+        report(96, "temperature compensation tables...");
+
+        // 4a. 内参补偿表 L/R
+        calib::CameraIntrinsics cL{
+            result.cameraMatrixL.at<double>(0, 0),
+            result.cameraMatrixL.at<double>(1, 1),
+            result.cameraMatrixL.at<double>(0, 2),
+            result.cameraMatrixL.at<double>(1, 2),
+            input.referenceTemp
+        };
+        calib::CameraIntrinsics cR{
+            result.cameraMatrixR.at<double>(0, 0),
+            result.cameraMatrixR.at<double>(1, 1),
+            result.cameraMatrixR.at<double>(0, 2),
+            result.cameraMatrixR.at<double>(1, 2),
+            input.referenceTemp
+        };
+        calib::IntrinsicCompensateCPUParams icp;
+        icp.cte = input.cte;
+        icp.tempStep = input.tempStep;
+        icp.tempRangeMin = input.tempRangeMin;
+        icp.tempRangeMax = input.tempRangeMax;
+        calib::IntrinsicCompensateCPU icomp(icp);
+        auto tableIntrinL = icomp.Execute(cL);
+        auto tableIntrinR = icomp.Execute(cR);
+
+        // 4b. 外参补偿表
+        calib::CameraExtrinsics ce;
+        ce.referenceTemp = input.referenceTemp;
+        for (int i = 0; i < 3; ++i)
+            ce.T[i] = result.T.at<double>(i);
+        for (int i = 0; i < 9; ++i)
+            ce.R[i] = result.R.at<double>(i / 3, i % 3);
+        calib::ExtrinsicCompensateCPUParams ecp;
+        ecp.cte = input.cte;
+        ecp.tempStep = input.tempStep;
+        ecp.tempRangeMin = input.tempRangeMin;
+        ecp.tempRangeMax = input.tempRangeMax;
+        calib::ExtrinsicCompensateCPU ecomp(ecp);
+        auto tableExtrin = ecomp.Execute(ce);
+
+        // 4c. 立体矫正温度补偿表
+        calib::StereoRectifyTempTableParams strp;
+        strp.cameraMatrixL = result.cameraMatrixL;
+        strp.distCoeffsL = result.distCoeffsL;
+        strp.cameraMatrixR = result.cameraMatrixR;
+        strp.distCoeffsR = result.distCoeffsR;
+        strp.imageSize = cv::Size(input.imageWidth, input.imageHeight);
+        strp.R = result.R;
+        strp.T = result.T;
+        strp.referenceTemp = input.referenceTemp;
+        strp.cte = input.cte;
+        strp.tempStep = input.tempStep;
+        strp.tempRangeMin = input.tempRangeMin;
+        strp.tempRangeMax = input.tempRangeMax;
+        strp.alpha = input.rectifyAlpha;
+        strp.flags = input.rectifyFlags;
+        calib::StereoRectifyTempTableCpu strtab(strp);
+        auto tableSR = strtab.Execute();
+
+        // 序列化为 JSON
+        nlohmann::json tempJson;
+        tempJson["referenceTemp"] = input.referenceTemp;
+        tempJson["cte"] = input.cte;
+        tempJson["intrinsicL"] = tableIntrinL.toJson();
+        tempJson["intrinsicR"] = tableIntrinR.toJson();
+        tempJson["extrinsic"] = tableExtrin.toJson();
+        tempJson["stereoRectify"]["success"] = tableSR.success;
+        tempJson["stereoRectify"]["tableSize"] = tableSR.table.size();
+        result.tempTablesJson = tempJson.dump();
+        result.hasTempTables = true;
+
+        report(99, "temperature tables done");
+    }
+
     report(100, "calibration done");
     result.success = true;
     return result;
@@ -148,26 +243,232 @@ LaserCalibResult runLaserCalibration(const LaserCalibInput& input,
     std::function<void(int, const std::string&)> progress)
 {
     LaserCalibResult result;
+    auto report = [&](int pct, const std::string& step) {
+        if (progress) progress(pct, step);
+    };
 
+    // 前置检查
     if (!input.cameraCalib || !input.cameraCalib->success) {
         result.message = "camera calibration required";
         return result;
     }
-    if (input.leftImage.empty() || input.rightImage.empty()) {
-        result.message = "laser images empty";
+    if (input.poses.empty()) {
+        result.message = "no laser pose images";
+        return result;
+    }
+    const auto& cal = *input.cameraCalib;
+
+    report(5, "laser calibration: initializing operators...");
+
+    // 提取相机标定参数
+    double f = cal.cameraMatrixL.at<double>(0, 0);
+    cv::Point2d principalPoint(cal.cameraMatrixL.at<double>(0, 2),
+                                cal.cameraMatrixL.at<double>(1, 2));
+
+    // 创建 CUDA 算子（标定参数通过 SetParams 或构造函数传入）
+    calib::MaskExtractCUDA maskOp;
+    calib::RegionAnalyzerCUDA cclOp;
+    calib::LaserLabelerCUDA labelOp;
+    calib::StegerExtractorCUDA stegerOp;
+    calib::LaserMatchCuda matchOp;
+    calib::LaserReconstructCuda reconstructOp;
+
+    calib::UndistortPointsCuda undistortLeft;
+    calib::UndistortPointsParams undistLeftParams;
+    undistLeftParams.cameraMatrix = cal.cameraMatrixL;
+    undistLeftParams.distCoeffs = cal.distCoeffsL;
+    undistLeftParams.R = cal.R1;
+    undistLeftParams.P = cal.P1;
+    undistortLeft.SetParams(undistLeftParams);
+
+    calib::UndistortPointsCuda undistortRight;
+    calib::UndistortPointsParams undistRightParams;
+    undistRightParams.cameraMatrix = cal.cameraMatrixR;
+    undistRightParams.distCoeffs = cal.distCoeffsR;
+    undistRightParams.R = cal.R2;
+    undistRightParams.P = cal.P2;
+    undistortRight.SetParams(undistRightParams);
+
+    calib::EpipolarInterpCuda epipolarOp;
+    calib::EpipolarInterpParams epipolarParams;
+    epipolarParams.lineIdCheck = true;  // 标定模式
+    epipolarOp.SetParams(epipolarParams);
+
+    // 聚合容器
+    std::vector<calib::PosePointSet> allPoses;
+    int totalPoints = 0;
+
+    cv::cuda::Stream stream;
+
+    // ===== 逐姿态处理激光链 =====
+    int poseIdx = 0;
+    for (const auto& pose : input.poses) {
+        int pct = 10 + static_cast<int>(70.0 * poseIdx / input.poses.size());
+        report(pct, "pose " + std::to_string(poseIdx + 1) + "/" +
+                     std::to_string(input.poses.size()));
+
+        // --- 4-1 mask_extract (L/R) ---
+        auto maskL = maskOp.Execute(pose.leftLaserGray, stream);
+        auto maskR = maskOp.Execute(pose.rightLaserGray, stream);
+        if (!maskL.success || !maskR.success) {
+            spdlog::warn("pose {}: mask_extract failed, skip", poseIdx);
+            ++poseIdx;
+            continue;
+        }
+
+        // --- 4-2 CCL (L/R) ---
+        auto cclL = cclOp.Execute(*maskL.d_cleanedMask, stream);
+        auto cclR = cclOp.Execute(*maskR.d_cleanedMask, stream);
+        if (!cclL.success || !cclR.success) {
+            spdlog::warn("pose {}: CCL failed, skip", poseIdx);
+            ++poseIdx;
+            continue;
+        }
+
+        // --- 4-3 laser_label (L/R) ---
+        auto labelL = labelOp.Execute(*cclL.d_labeledMask, stream);
+        auto labelR = labelOp.Execute(*cclR.d_labeledMask, stream);
+        if (!labelL.success || !labelR.success) {
+            spdlog::warn("pose {}: laser_label failed, skip", poseIdx);
+            ++poseIdx;
+            continue;
+        }
+
+        // --- 4-4 steger (L/R, ByLabel) ---
+        auto stegerL = stegerOp.Execute(*maskL.d_grayImage, *labelL.d_labeledMask, stream);
+        auto stegerR = stegerOp.Execute(*maskR.d_grayImage, *labelR.d_labeledMask, stream);
+        if (!stegerL.success || !stegerR.success) {
+            spdlog::warn("pose {}: steger failed, skip", poseIdx);
+            ++poseIdx;
+            continue;
+        }
+
+        // --- 4-5 undistort (L/R) ---
+        auto undistL = undistortLeft.Execute(*stegerL.d_centerPoints, *stegerL.d_line_ids, stream);
+        auto undistR = undistortRight.Execute(*stegerR.d_centerPoints, *stegerR.d_line_ids, stream);
+        if (!undistL.success || !undistR.success) {
+            spdlog::warn("pose {}: undistort failed, skip", poseIdx);
+            ++poseIdx;
+            continue;
+        }
+
+        // --- 4-6 epipolar_interp (L/R, lineIdCheck=true) ---
+        auto epiL = epipolarOp.Execute(*undistL.d_rectifiedPoints, *undistL.d_line_ids, stream);
+        auto epiR = epipolarOp.Execute(*undistR.d_rectifiedPoints, *undistR.d_line_ids, stream);
+        if (!epiL.success || !epiR.success) {
+            spdlog::warn("pose {}: epipolar_interp failed, skip", poseIdx);
+            ++poseIdx;
+            continue;
+        }
+
+        // --- 4-7 laser_match (L/R) ---
+        auto matchRes = matchOp.Execute(*epiL.d_interpPoints, *epiL.d_interp_line_ids,
+                                         *epiR.d_interpPoints, *epiR.d_interp_line_ids, stream);
+        if (!matchRes.success || matchRes.matchCount == 0) {
+            spdlog::warn("pose {}: laser_match failed/empty, skip", poseIdx);
+            ++poseIdx;
+            continue;
+        }
+
+        // --- 4-8 laser_reconstruct ---
+        auto recon = reconstructOp.Execute(*matchRes.d_matched_left, *matchRes.d_matched_right,
+                                            *matchRes.d_matched_line_ids, cal.Q, stream);
+        if (!recon.success || recon.validCount == 0) {
+            spdlog::warn("pose {}: laser_reconstruct failed/empty, skip", poseIdx);
+            ++poseIdx;
+            continue;
+        }
+
+        // --- 聚合：download d_points3d → host ---
+        stream.waitForCompletion();
+
+        calib::PosePointSet pps;
+        cv::Mat points3dHost;
+        recon.d_points3d->download(points3dHost, stream);
+        stream.waitForCompletion();
+
+        // points3d is CV_32FC3, each row is a Point3f
+        for (int i = 0; i < points3dHost.rows; ++i) {
+            cv::Vec3f pt = points3dHost.at<cv::Vec3f>(i, 0);
+            if (std::isfinite(pt[0]) && std::isfinite(pt[1]) && std::isfinite(pt[2]) &&
+                std::fabs(pt[0]) < 1e5f && std::fabs(pt[1]) < 1e5f && std::fabs(pt[2]) < 1e5f) {
+                pps.points3d.push_back(pt);
+            }
+        }
+
+        // line_ids
+        cv::Mat lineIdsHost;
+        recon.d_valid_line_ids->download(lineIdsHost, stream);
+        stream.waitForCompletion();
+        for (int i = 0; i < lineIdsHost.rows && i < (int)pps.points3d.size(); ++i) {
+            pps.lineIds.push_back(lineIdsHost.at<int>(i, 0));
+        }
+
+        if (!pps.points3d.empty()) {
+            allPoses.push_back(std::move(pps));
+            totalPoints += static_cast<int>(allPoses.back().points3d.size());
+            spdlog::info("pose {}: {} valid 3D points", poseIdx, allPoses.back().points3d.size());
+        }
+
+        ++poseIdx;
+    }
+
+    // 清理 GPU 算子
+    maskOp.Destroy();
+    cclOp.Destroy();
+    labelOp.Destroy();
+    stegerOp.Destroy();
+    matchOp.Destroy();
+    reconstructOp.Destroy();
+    undistortLeft.Destroy();
+    undistortRight.Destroy();
+    epipolarOp.Destroy();
+
+    report(82, "aggregation done: " + std::to_string(allPoses.size()) + " poses, " +
+               std::to_string(totalPoints) + " points");
+
+    if (allPoses.size() < 3) {
+        result.message = "too few valid poses: " + std::to_string(allPoses.size());
         return result;
     }
 
-    // TODO: 对接激光算子
-    // 1. EndpointExtract(input.leftImage, input.rightImage, ...)
-    // 2. LaserLabel(...)
-    // 3. LaserMatch(...)
-    // 4. PlaneMap(...)
-    // 5. PoseOptimize(...)
-    // 6. VirtualCameraPose(...)
-    // 使用 input.cameraCalib->cameraMatrixL/R, distCoeffsL/R, R1/R2/P1/P2/Q
+    // ===== projector_joint_calib =====
+    report(85, "projector_joint_calib...");
 
-    result.message = "laser calibration: operator integration TODO";
+    calib::ProjectorJointCalibParams pjcParams;
+    calib::ProjectorJointCalib pjc(pjcParams);
+
+    calib::ProjectorJointCalibInput pjcInput;
+    pjcInput.poses = std::move(allPoses);
+    pjcInput.f = f;
+    pjcInput.principalPoint = principalPoint;
+    pjcInput.initialT = cv::Vec3d(input.initialTx, input.initialTy, input.initialTz);
+
+    auto pjcResult = pjc.Execute(pjcInput);
+
+    if (!pjcResult.success) {
+        result.message = "projector_joint_calib failed: " + pjcResult.message;
+        return result;
+    }
+
+    result.projectorT[0] = pjcResult.projectorT[0];
+    result.projectorT[1] = pjcResult.projectorT[1];
+    result.projectorT[2] = pjcResult.projectorT[2];
+    result.improvementRatio = pjcResult.improvementRatio;
+    result.finalRms = pjcResult.finalSampsonRms;
+    result.poseCount = pjcResult.poseCount;
+    result.totalPointCount = pjcResult.totalPointCount;
+
+    report(90, "projector_joint_calib done: T=(" +
+               std::to_string(result.projectorT[0]) + "," +
+               std::to_string(result.projectorT[1]) + "," +
+               std::to_string(result.projectorT[2]) + ")");
+
+    // ===== plane_map + 温度补偿表（可选，后续补充）=====
+    // TODO: plane_map + plane_map_temp_table + laser_extrinsic_compensate
+
+    report(100, "laser calibration done");
+    result.success = true;
     return result;
 }
 
@@ -211,6 +512,10 @@ bool saveCalibResult(const std::string& filepath, const CameraCalibResult& r)
     j["stereoReprojError"] = r.stereoReprojError;
     j["epipolarErrorMean"] = r.epipolarErrorMean;
     j["validFrameCount"] = r.validFrameCount;
+    j["hasTempTables"] = r.hasTempTables;
+    if (r.hasTempTables && !r.tempTablesJson.empty()) {
+        j["tempTables"] = nlohmann::json::parse(r.tempTablesJson);
+    }
 
     j["cameraMatrixL"] = matToJson(r.cameraMatrixL);
     j["distCoeffsL"] = matToJson(r.distCoeffsL);
@@ -243,6 +548,10 @@ bool loadCalibResult(const std::string& filepath, CameraCalibResult& r)
     r.stereoReprojError = j.value("stereoReprojError", 0.0);
     r.epipolarErrorMean = j.value("epipolarErrorMean", 0.0);
     r.validFrameCount = j.value("validFrameCount", 0);
+    r.hasTempTables = j.value("hasTempTables", false);
+    if (j.contains("tempTables")) {
+        r.tempTablesJson = j["tempTables"].dump();
+    }
 
     if (j.contains("cameraMatrixL")) r.cameraMatrixL = jsonToMat(j["cameraMatrixL"]);
     if (j.contains("distCoeffsL")) r.distCoeffsL = jsonToMat(j["distCoeffsL"]);
@@ -264,8 +573,15 @@ bool saveLaserCalibResult(const std::string& filepath, const LaserCalibResult& r
     nlohmann::json j;
     j["success"] = r.success;
     j["message"] = r.message;
-    j["lineCount"] = r.lineCount;
-    j["endpointCount"] = r.endpointCount;
+    j["projectorT"] = {r.projectorT[0], r.projectorT[1], r.projectorT[2]};
+    j["improvementRatio"] = r.improvementRatio;
+    j["finalRms"] = r.finalRms;
+    j["poseCount"] = r.poseCount;
+    j["totalPointCount"] = r.totalPointCount;
+    j["hasTempTables"] = r.hasTempTables;
+    if (r.hasTempTables && !r.tempTablesJson.empty()) {
+        j["tempTables"] = nlohmann::json::parse(r.tempTablesJson);
+    }
     std::ofstream ofs(filepath);
     if (!ofs.is_open()) return false;
     ofs << j.dump(2);
@@ -280,8 +596,20 @@ bool loadLaserCalibResult(const std::string& filepath, LaserCalibResult& r)
     ifs >> j;
     r.success = j.value("success", false);
     r.message = j.value("message", "");
-    r.lineCount = j.value("lineCount", 0);
-    r.endpointCount = j.value("endpointCount", 0);
+    if (j.contains("projectorT") && j["projectorT"].is_array()) {
+        auto& t = j["projectorT"];
+        r.projectorT[0] = t.size() > 0 ? t[0].get<double>() : 0;
+        r.projectorT[1] = t.size() > 1 ? t[1].get<double>() : 0;
+        r.projectorT[2] = t.size() > 2 ? t[2].get<double>() : 0;
+    }
+    r.improvementRatio = j.value("improvementRatio", 0.0);
+    r.finalRms = j.value("finalRms", 0.0);
+    r.poseCount = j.value("poseCount", 0);
+    r.totalPointCount = j.value("totalPointCount", 0);
+    r.hasTempTables = j.value("hasTempTables", false);
+    if (j.contains("tempTables")) {
+        r.tempTablesJson = j["tempTables"].dump();
+    }
     return r.success;
 }
 

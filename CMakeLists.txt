@@ -27,7 +27,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 # ============================================================================
 # 编译选项
 # ============================================================================
-option(ENABLE_CUDA "Enable CUDA support" OFF)
+option(ENABLE_CUDA "Enable CUDA support" ON)
 option(BUILD_TESTS "Build tests" ON)
 
 include(cmake/CompilerSettings.cmake)
@@ -97,6 +97,7 @@ if(ENABLE_CUDA)
         $<$<CONFIG:Debug>:${_OcvDir}/opencv_cudaarithm4130d.lib>$<$<NOT:$<CONFIG:Debug>>:${_OcvDir}/opencv_cudaarithm4130.lib>
         $<$<CONFIG:Debug>:${_OcvDir}/opencv_cudawarping4130d.lib>$<$<NOT:$<CONFIG:Debug>>:${_OcvDir}/opencv_cudawarping4130.lib>
         $<$<CONFIG:Debug>:${_OcvDir}/opencv_cudaimgproc4130d.lib>$<$<NOT:$<CONFIG:Debug>>:${_OcvDir}/opencv_cudaimgproc4130.lib>
+        $<$<CONFIG:Debug>:${_OcvDir}/opencv_cudafilters4130d.lib>$<$<NOT:$<CONFIG:Debug>>:${_OcvDir}/opencv_cudafilters4130.lib>
     )
     message(STATUS "CUDA enabled: ${CUDAToolkit_VERSION} arch=${CMAKE_CUDA_ARCHITECTURES}")
 endif()

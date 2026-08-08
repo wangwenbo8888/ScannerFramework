@@ -25,6 +25,15 @@ struct CameraCalibInput {
     // 采集阶段已检测好的角点（每帧一组，至少25帧）
     std::vector<std::vector<cv::Point2f>> leftCorners;
     std::vector<std::vector<cv::Point2f>> rightCorners;
+    // 温度补偿参数（可选，cte=0 则跳过）
+    double cte = 23.6e-6;           // 热膨胀系数 (6061-T6 铝)
+    double referenceTemp = 25.0;     // 参考温度 °C
+    double tempStep = 2.0;           // 温度步长 °C
+    double tempRangeMin = -10.0;     // 参考温度下方范围 °C（相对值）
+    double tempRangeMax = 10.0;      // 参考温度上方范围 °C（相对值）
+    // 立体矫正额外参数（可选）
+    double rectifyAlpha = -1.0;      // -1=自动
+    int rectifyFlags = 0;
 };
 
 struct CameraCalibResult {
@@ -46,6 +55,10 @@ struct CameraCalibResult {
     cv::Rect validRoiL, validRoiR;
 
     int validFrameCount = 0;
+
+    // 温度补偿表（阶段3扩展，hasTempTables=true 时 tempTablesJson 有效）
+    bool hasTempTables = false;
+    std::string tempTablesJson;  // 序列化的3张温度补偿表（JSON字符串，供运行时解析）
 };
 
 // 完整相机标定流程（内参→外参→矫正）
@@ -62,20 +75,43 @@ bool loadCalibResult(const std::string& filepath, CameraCalibResult& result);
 // 激光标定（依赖相机标定结果）
 // ============================================================================
 
+struct LaserPoseImages {
+    cv::Mat leftLaserGray;    // 左目激光灰度图 (CV_8UC1)
+    cv::Mat rightLaserGray;   // 右目激光灰度图 (CV_8UC1)
+    double temperature = 25.0;
+};
+
 struct LaserCalibInput {
-    // 采集阶段获取的激光线图像
-    cv::Mat leftImage;
-    cv::Mat rightImage;
-    // 相机标定结果（和相机标定同时采集，共享内外参）
+    std::vector<LaserPoseImages> poses;  // 25+ 姿态的激光图像
     const CameraCalibResult* cameraCalib = nullptr;
+
+    // 投影机光心初始值（机械装配公差，约(80,3,3)mm）
+    double initialTx = 80.0;
+    double initialTy = 3.0;
+    double initialTz = 3.0;
+
+    // 温度补偿（可选，cte=0 跳过）
+    double cte = 0.0;
+    double referenceTemp = 25.0;
+    double tempStep = 2.0;
+    double tempRangeMin = -10.0;
+    double tempRangeMax = 10.0;
 };
 
 struct LaserCalibResult {
     bool success = false;
     std::string message;
-    int lineCount = 0;
-    int endpointCount = 0;
-    // 激光平面映射等结果（具体字段待算子对接补充）
+
+    // projector_joint_calib 输出
+    double projectorT[3] = {};
+    double improvementRatio = 0.0;
+    double finalRms = 0.0;
+    int poseCount = 0;
+    int totalPointCount = 0;
+
+    // 温度补偿表
+    bool hasTempTables = false;
+    std::string tempTablesJson;
 };
 
 // 激光标定流程
