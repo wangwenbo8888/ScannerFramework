@@ -2,27 +2,41 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC OFF)
 
+# === app 核心文件 ===
 set(APP_SOURCES
     main.cpp
     AppContext.cpp
     AppContext.h
     MainWindow.cpp
     MainWindow.h
-    OSGWidget.cpp
-    OSGWidget.h
-    CalibDialog.cpp
-    CalibDialog.h
-    CalibDisplay.cpp
-    CalibDisplay.h
-    IntegrateTestDialog.cpp
-    IntegrateTestDialog.h
-    ScannerWindow.cpp
-    ScannerWindow.h
-    ScannerWindow.ui
-    calib_workflow.cpp
-    calib_workflow.h
-    file_io.cpp
-    file_io.h
+)
+
+# === 模块文件（物理在 modules/ 下，编译进 scan_demo）===
+set(MOD_CALIBRATION
+    ${CMAKE_SOURCE_DIR}/modules/01_calibration/calib_workflow.cpp
+    ${CMAKE_SOURCE_DIR}/modules/01_calibration/calib_workflow.h
+    ${CMAKE_SOURCE_DIR}/modules/01_calibration/CalibDialog.cpp
+    ${CMAKE_SOURCE_DIR}/modules/01_calibration/CalibDialog.h
+    ${CMAKE_SOURCE_DIR}/modules/01_calibration/CalibDisplay.cpp
+    ${CMAKE_SOURCE_DIR}/modules/01_calibration/CalibDisplay.h
+    ${CMAKE_SOURCE_DIR}/modules/01_calibration/IntegrateTestDialog.cpp
+    ${CMAKE_SOURCE_DIR}/modules/01_calibration/IntegrateTestDialog.h
+)
+
+set(MOD_SCANNING
+    ${CMAKE_SOURCE_DIR}/modules/02_scanning/ScannerWindow.cpp
+    ${CMAKE_SOURCE_DIR}/modules/02_scanning/ScannerWindow.h
+    ${CMAKE_SOURCE_DIR}/modules/02_scanning/ScannerWindow.ui
+)
+
+set(MOD_RENDERING
+    ${CMAKE_SOURCE_DIR}/modules/03_rendering/OSGWidget.cpp
+    ${CMAKE_SOURCE_DIR}/modules/03_rendering/OSGWidget.h
+)
+
+set(MOD_FILEIO
+    ${CMAKE_SOURCE_DIR}/modules/06_fileio/file_io.cpp
+    ${CMAKE_SOURCE_DIR}/modules/06_fileio/file_io.h
 )
 
 set(GENERATED_QRC_CPP ${CMAKE_CURRENT_BINARY_DIR}/qrc_resources.cpp)
@@ -35,12 +49,23 @@ add_custom_command(
     VERBATIM
 )
 
-add_executable(scan_demo ${APP_SOURCES} ${GENERATED_QRC_CPP})
+add_executable(scan_demo
+    ${APP_SOURCES}
+    ${MOD_CALIBRATION}
+    ${MOD_SCANNING}
+    ${MOD_RENDERING}
+    ${MOD_FILEIO}
+    ${GENERATED_QRC_CPP}
+)
 
 target_include_directories(scan_demo PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/stubs
     ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/modules/01_calibration
+    ${CMAKE_SOURCE_DIR}/modules/02_scanning
+    ${CMAKE_SOURCE_DIR}/modules/03_rendering
+    ${CMAKE_SOURCE_DIR}/modules/06_fileio
 )
 
 target_link_libraries(scan_demo PRIVATE
