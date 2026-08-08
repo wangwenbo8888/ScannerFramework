@@ -15,7 +15,7 @@
 #include <QSpinBox>
 #include <QTimer>
 
-#include "modules/06_device_control/CameraControl.h"
+#include "modules/08_devicemgmt/CameraControl.h"
 
 class IntegrateTestDialog : public QDialog
 {

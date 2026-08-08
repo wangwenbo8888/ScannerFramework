@@ -3,7 +3,7 @@
 #include "workflow/IWorkflow.h"
 #include "workflow/ScanWorkflow.h"
 #include "workflow/CalibrationWorkflow.h"
-#include "modules/06_device_control/HardwareMonitor.h"
+#include "modules/08_devicemgmt/HardwareMonitor.h"
 #include "service/StateMachine.h"
 
 #include <opencv2/imgproc.hpp>

@@ -1,14 +1,14 @@
-# Module 06_device_control — 相机/MCU/硬件监控
+# Module 08_devicemgmt — 设备管理（相机/MCU/硬件监控 + 许可证）
 
 set(GALAXY_SDK_DIR "${CMAKE_SOURCE_DIR}/sdk/third_party/galaxy_sdk")
 
-add_library(mod_device_control STATIC
+add_library(mod_devicemgmt STATIC
     CameraControl.cpp
     MCUDriver.cpp
     HardwareMonitor.cpp
 )
 
-target_include_directories(mod_device_control
+target_include_directories(mod_devicemgmt
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${GALAXY_SDK_DIR}/inc
@@ -17,7 +17,7 @@ target_include_directories(mod_device_control
         ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-target_link_libraries(mod_device_control
+target_link_libraries(mod_devicemgmt
     PUBLIC
         fw_hal
         fw_data

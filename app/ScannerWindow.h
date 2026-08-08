@@ -11,7 +11,7 @@
 #include <QSerialPortInfo>
 #include "ui_ScannerWindow.h"
 
-#include "modules/06_device_control/CameraControl.h"
+#include "modules/08_devicemgmt/CameraControl.h"
 #include "data/FrameBuffer.h"
 
 class AppContext;
