@@ -28,6 +28,7 @@
 #include <Eigen/Dense>
 
 #include <osgUtil/CullVisitor>
+#include <osgUtil/Optimizer>
 
 
 
@@ -712,11 +713,6 @@ void OSGWidget::initializeGL()
     camera->setGraphicsContext(m_gw.get());
 
     m_viewer->setCamera(camera.get());
-
-    // Prevent OSG from auto-computing near/far during frame(),
-    // which would overwrite our projection matrix with values
-    // that don't match getProjectionMatrix() returns.
-    m_viewer->getCamera()->setComputeNearFarMode(osg::CullSettings::DO_NOT_COMPUTE_NEAR_FAR);
 
     osg::ref_ptr<osg::Group> sceneRoot = new osg::Group();
     sceneRoot->getOrCreateStateSet()->setMode(GL_LIGHTING, osg::StateAttribute::OFF);
@@ -1564,14 +1560,21 @@ bool OSGWidget::loadMesh(const QString& filepath)
     norms->reserve(mesh.vertices.size());
 
     if (!mesh.indices.empty()) {
-        // 索引模式
+        // 平面法线：用 STL 原始面法线（参照 K2），无平滑
+        bool hasNormals = (mesh.normals.size() == mesh.vertices.size());
         for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
             const auto& p0 = mesh.vertices[mesh.indices[i]];
             const auto& p1 = mesh.vertices[mesh.indices[i+1]];
             const auto& p2 = mesh.vertices[mesh.indices[i+2]];
-            osg::Vec3 nm = (p1 - p0) ^ (p2 - p0); nm.normalize();
             verts->push_back(p0); verts->push_back(p1); verts->push_back(p2);
-            norms->push_back(nm); norms->push_back(nm); norms->push_back(nm);
+            if (hasNormals) {
+                norms->push_back(mesh.normals[mesh.indices[i]]);
+                norms->push_back(mesh.normals[mesh.indices[i+1]]);
+                norms->push_back(mesh.normals[mesh.indices[i+2]]);
+            } else {
+                osg::Vec3 nm = (p1 - p0) ^ (p2 - p0); nm.normalize();
+                norms->push_back(nm); norms->push_back(nm); norms->push_back(nm);
+            }
         }
     } else {
         for (const auto& p : mesh.vertices) verts->push_back(p);
@@ -1588,6 +1591,8 @@ bool OSGWidget::loadMesh(const QString& filepath)
     // 光照材质（参照 LEADSCAN K2 loadModel：GL_LIGHT1 + 双面光照 + LeadScan 蓝材质）
     osg::ref_ptr<osg::StateSet> ss = geom->getOrCreateStateSet();
     ss->setMode(GL_NORMALIZE, osg::StateAttribute::ON);
+    ss->setMode(GL_DEPTH_TEST, osg::StateAttribute::ON);
+    ss->setMode(GL_CULL_FACE, osg::StateAttribute::OFF);
     ss->setMode(GL_LIGHTING, osg::StateAttribute::ON);
     ss->setMode(GL_LIGHT1, osg::StateAttribute::ON);
     osg::ref_ptr<osg::LightModel> lm = new osg::LightModel;
@@ -1602,6 +1607,9 @@ bool OSGWidget::loadMesh(const QString& filepath)
 
     osg::ref_ptr<osg::Geode> geode = new osg::Geode;
     geode->addDrawable(geom);
+    osgUtil::Optimizer optimizer;
+    optimizer.optimize(geom);
+    optimizer.reset();
     m_root->addChild(geode);
 
     // 相机定位并锁定视图

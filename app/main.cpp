@@ -3,6 +3,7 @@
 #include <QApplication>
 #include <QFile>
 #include <QScreen>
+#include <QSurfaceFormat>
 #include <spdlog/spdlog.h>
 
 int main(int argc, char *argv[])
@@ -13,6 +14,12 @@ int main(int argc, char *argv[])
 
     spdlog::set_level(spdlog::level::info);
     spdlog::info("=== ScannerFramework 启动 ===");
+
+    // 8x MSAA 抗锯齿（参照 LEADSCAN K2 的 setNumMultiSamples(8)），消除网格鱼鳞/闪烁
+    QSurfaceFormat fmt;
+    fmt.setDepthBufferSize(24);
+    fmt.setSamples(8);
+    QSurfaceFormat::setDefaultFormat(fmt);
 
     QApplication app(argc, argv);
 

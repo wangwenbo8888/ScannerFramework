@@ -274,14 +274,21 @@ bool importSTL(const std::string& filepath, MeshData& mesh)
         if (!ifs.is_open()) return false;
         mesh.vertices.clear();
         mesh.indices.clear();
+        mesh.normals.clear();
+        osg::Vec3 curN(0, 0, 1);
         std::string tok;
         while (ifs >> tok) {
-            if (tok == "vertex") {
+            if (tok == "facet") {
+                std::string nkw; float nx, ny, nz;
+                ifs >> nkw >> nx >> ny >> nz;
+                curN.set(nx, ny, nz);
+            } else if (tok == "vertex") {
                 float x, y, z;
                 ifs >> x >> y >> z;
                 unsigned int idx = (unsigned int)mesh.vertices.size();
                 mesh.vertices.emplace_back(x, y, z);
                 mesh.indices.push_back(idx);
+                mesh.normals.push_back(curN);
             }
         }
         return !mesh.vertices.empty();
@@ -300,8 +307,10 @@ bool importSTL(const std::string& filepath, MeshData& mesh)
 
     mesh.vertices.clear();
     mesh.indices.clear();
+    mesh.normals.clear();
     mesh.vertices.reserve(numTris * 3);
     mesh.indices.reserve(numTris * 3);
+    mesh.normals.reserve(numTris * 3);
 
     for (unsigned int i = 0; i < numTris; ++i) {
         float n[3], v[9];
@@ -317,6 +326,9 @@ bool importSTL(const std::string& filepath, MeshData& mesh)
         mesh.indices.push_back(base);
         mesh.indices.push_back(base + 1);
         mesh.indices.push_back(base + 2);
+        mesh.normals.emplace_back(n[0], n[1], n[2]);
+        mesh.normals.emplace_back(n[0], n[1], n[2]);
+        mesh.normals.emplace_back(n[0], n[1], n[2]);
     }
     fclose(f);
     return !mesh.vertices.empty();
