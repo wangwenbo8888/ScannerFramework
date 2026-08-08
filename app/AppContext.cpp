@@ -16,9 +16,9 @@
 #include "modules/08_devicemgmt/MCUDriver.h"
 #include "modules/08_devicemgmt/HardwareMonitor.h"
 #include "workflow/WorkflowContext.h"
-#include "workflow/ScanWorkflow.h"
-#include "workflow/CalibrationWorkflow.h"
-#include "workflow/PostProcessWorkflow.h"
+#include "ScanWorkflow.h"
+#include "CalibrationWorkflow.h"
+#include "PostProcessWorkflow.h"
 #include <spdlog/spdlog.h>
 
 AppContext::AppContext() {}

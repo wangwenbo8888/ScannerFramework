@@ -66,6 +66,7 @@ target_include_directories(scan_demo PRIVATE
     ${CMAKE_SOURCE_DIR}/modules/02_scanning
     ${CMAKE_SOURCE_DIR}/modules/03_rendering
     ${CMAKE_SOURCE_DIR}/modules/06_fileio
+    ${CMAKE_SOURCE_DIR}/modules/04_postprocessing
 )
 
 target_link_libraries(scan_demo PRIVATE
