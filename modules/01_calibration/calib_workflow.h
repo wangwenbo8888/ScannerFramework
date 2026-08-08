@@ -72,6 +72,55 @@ bool saveCalibResult(const std::string& filepath, const CameraCalibResult& resul
 bool loadCalibResult(const std::string& filepath, CameraCalibResult& result);
 
 // ============================================================================
+// 阶段2 姿态判断（单帧标记点处理链）
+// ============================================================================
+
+struct PoseEstimationInput {
+    cv::Mat leftMarkerGray;    // 左目标记点灰度图 CV_8UC1
+    cv::Mat rightMarkerGray;   // 右目标记点灰度图 CV_8UC1
+
+    // 初始标定参数（从文件或出厂标定加载）
+    cv::Mat cameraMatrixL, distCoeffsL;
+    cv::Mat cameraMatrixR, distCoeffsR;
+    cv::Mat R, T;              // 初始外参
+    cv::Mat R1, R2, P1, P2, Q; // 初始立体矫正参数
+
+    // 标定板参数
+    int chessboardCols = 6;
+    int chessboardRows = 7;
+    double squareSizeMm = 15.0;
+};
+
+struct PoseEstimationResult {
+    bool success = false;
+    std::string message;
+
+    // frame_fuse 输出
+    cv::Matx33d R = cv::Matx33d::eye();
+    cv::Vec3d T = cv::Vec3d(0, 0, 0);
+    cv::Matx44d transform = cv::Matx44d::eye();
+
+    // pose_estimate 输出
+    bool anyMatched = false;
+    int bestMatch = -1;
+    std::string matchedPoseName;
+
+    // 椭圆中心（供阶段3 inverse_distort 使用）
+    std::vector<cv::Point2f> leftCenters;
+    std::vector<cv::Point2f> rightCenters;
+
+    // 标记点3D重建结果（供 frame_fuse 全局集使用）
+    std::vector<cv::Point3d> markerPositions;
+    std::vector<cv::Vec3d> markerNormals;
+};
+
+// 单帧姿态估计（14算子链：mask→filter→ccl→split→zernike→merge→undistort→ellipse→match→epipolar→edge_match→reconstruct→fuse→pose）
+PoseEstimationResult runPoseEstimation(
+    const PoseEstimationInput& input,
+    const PoseEstimationResult* prevFrame = nullptr,
+    std::function<void(int, const std::string&)> progress = nullptr);
+
+// ============================================================================
 // 激光标定（依赖相机标定结果）
 // ============================================================================
 

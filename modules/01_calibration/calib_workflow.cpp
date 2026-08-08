@@ -7,9 +7,23 @@
 #include "intrinsic_compensate_cpu.h"
 #include "extrinsic_compensate_cpu.h"
 
-// 阶段4 激光标定算子
+// 阶段2 姿态判断算子
 #include "mask_extract_cuda.h"
+#include "frame_filter_cuda.h"
 #include "region_analyze_cuda.h"
+#include "image_split_cpu.h"
+#include "zernike_edge_cpu.h"
+#include "image_merge_cpu.h"
+#include "undistort_points_cpu.h"
+#include "ellipse_fit_cpu.h"
+#include "marker_match_cpu.h"
+#include "epipolar_intersect_cpu.h"
+#include "edge_match_cpu.h"
+#include "point_reconstruct_cpu.h"
+#include "frame_fuse_cpu.h"
+#include "pose_estimate_cpu.h"
+
+// 阶段4 激光标定算子
 #include "laser_label_cuda.h"
 #include "steger_extract_cuda.h"
 #include "undistort_points_cuda.h"
@@ -232,6 +246,300 @@ CameraCalibResult runCameraCalibration(
     }
 
     report(100, "calibration done");
+    result.success = true;
+    return result;
+}
+
+// ============================================================================
+// 阶段2 姿态判断（单帧标记点处理链，14算子）
+// ============================================================================
+PoseEstimationResult runPoseEstimation(
+    const PoseEstimationInput& input,
+    const PoseEstimationResult* prevFrame,
+    std::function<void(int, const std::string&)> progress)
+{
+    PoseEstimationResult result;
+    auto report = [&](int pct, const std::string& step) {
+        if (progress) progress(pct, step);
+    };
+
+    if (input.leftMarkerGray.empty() || input.rightMarkerGray.empty()) {
+        result.message = "empty input images";
+        return result;
+    }
+
+    cv::cuda::Stream stream;
+
+    // ===== 2-1 mask_extract (L/R) =====
+    report(5, "mask_extract...");
+    calib::MaskExtractCUDA maskOp;
+    auto maskL = maskOp.Execute(input.leftMarkerGray, stream);
+    auto maskR = maskOp.Execute(input.rightMarkerGray, stream);
+    if (!maskL.success || !maskR.success) {
+        result.message = "mask_extract failed";
+        maskOp.Destroy();
+        return result;
+    }
+
+    // ===== 2-1b frame_filter (L/R) =====
+    report(10, "frame_filter...");
+    calib::FrameFilterCUDA filterOp;
+    auto filterL = filterOp.Execute(*maskL.d_cleanedMask, stream);
+    auto filterR = filterOp.Execute(*maskR.d_cleanedMask, stream);
+    if (!filterL.isMarkerFrame || !filterR.isMarkerFrame) {
+        result.message = "not marker frame (laser frame filtered)";
+        maskOp.Destroy();
+        filterOp.Destroy();
+        return result;
+    }
+
+    // ===== 2-2 CCL (L/R) =====
+    report(15, "CCL...");
+    calib::RegionAnalyzerCUDA cclOp;
+    auto cclL = cclOp.Execute(*maskL.d_cleanedMask, stream);
+    auto cclR = cclOp.Execute(*maskR.d_cleanedMask, stream);
+    stream.waitForCompletion();
+    if (!cclL.success || !cclR.success || cclL.components.empty()) {
+        result.message = "CCL failed or empty";
+        maskOp.Destroy();
+        filterOp.Destroy();
+        cclOp.Destroy();
+        return result;
+    }
+
+    // CCL → roiRects (用于 image_split)
+    auto toRects = [](const calib::RegionAnalysisResult& res) {
+        std::vector<cv::Rect> rects;
+        for (const auto& c : res.components)
+            rects.emplace_back(c.boundingBoxX, c.boundingBoxY, c.boundingBoxWidth, c.boundingBoxHeight);
+        return rects;
+    };
+    auto roiRectsL = toRects(cclL);
+    auto roiRectsR = toRects(cclR);
+
+    maskOp.Destroy();
+    filterOp.Destroy();
+    cclOp.Destroy();
+
+    // ===== 2-3 image_split (L/R) =====
+    report(25, "image_split...");
+    calib::ImageSplitCPU splitOp;
+    auto splitL = splitOp.Execute(input.leftMarkerGray, roiRectsL);
+    auto splitR = splitOp.Execute(input.rightMarkerGray, roiRectsR);
+    if (!splitL.success || splitL.splitImages.empty()) {
+        result.message = "image_split failed";
+        return result;
+    }
+
+    // ===== 2-4 zernike_edge (per sub-image, L/R) =====
+    report(35, "zernike_edge...");
+    calib::ZernikeEdgeCPU zernikeOp;
+    std::vector<std::vector<calib::EdgePoint>> edgePointsPerSubL, edgePointsPerSubR;
+    for (const auto& sub : splitL.splitImages) {
+        auto er = zernikeOp.Execute(sub);
+        edgePointsPerSubL.push_back(er.edgePoints);
+    }
+    for (const auto& sub : splitR.splitImages) {
+        auto er = zernikeOp.Execute(sub);
+        edgePointsPerSubR.push_back(er.edgePoints);
+    }
+
+    // ===== 2-5 image_merge (L/R) =====
+    report(45, "image_merge...");
+    calib::ImageMergeCPU mergeOp;
+    auto mergeL = mergeOp.Execute(edgePointsPerSubL, roiRectsL);
+    auto mergeR = mergeOp.Execute(edgePointsPerSubR, roiRectsR);
+    if (!mergeL.success || mergeL.mergedEdgePoints.empty()) {
+        result.message = "image_merge failed or empty";
+        return result;
+    }
+
+    // ===== 2-6 undistort (L/R) =====
+    report(55, "undistort...");
+    calib::MarkerUndistortCPU undistortOp;
+    calib::MarkerUndistortCPUParams undistortParams;
+
+    // 从 cameraMatrix 填充 cam1(L) 和 cam2(R) 参数
+    undistortParams.fx1 = input.cameraMatrixL.at<double>(0, 0);
+    undistortParams.fy1 = input.cameraMatrixL.at<double>(1, 1);
+    undistortParams.cx1 = input.cameraMatrixL.at<double>(0, 2);
+    undistortParams.cy1 = input.cameraMatrixL.at<double>(1, 2);
+    undistortParams.fx2 = input.cameraMatrixR.at<double>(0, 0);
+    undistortParams.fy2 = input.cameraMatrixR.at<double>(1, 1);
+    undistortParams.cx2 = input.cameraMatrixR.at<double>(0, 2);
+    undistortParams.cy2 = input.cameraMatrixR.at<double>(1, 2);
+    {
+        const cv::Mat& D = input.distCoeffsL;
+        int n = std::min(D.rows * D.cols, 8);
+        const double* dp = D.ptr<double>();
+        if (n >= 1) undistortParams.k1_1 = dp[0];
+        if (n >= 2) undistortParams.k2_1 = dp[1];
+        if (n >= 3) undistortParams.p1_1 = dp[2];
+        if (n >= 4) undistortParams.p2_1 = dp[3];
+        if (n >= 5) undistortParams.k3_1 = dp[4];
+    }
+    {
+        const cv::Mat& D = input.distCoeffsR;
+        int n = std::min(D.rows * D.cols, 8);
+        const double* dp = D.ptr<double>();
+        if (n >= 1) undistortParams.k1_2 = dp[0];
+        if (n >= 2) undistortParams.k2_2 = dp[1];
+        if (n >= 3) undistortParams.p1_2 = dp[2];
+        if (n >= 4) undistortParams.p2_2 = dp[3];
+        if (n >= 5) undistortParams.k3_2 = dp[4];
+    }
+    undistortParams.imageWidth = input.leftMarkerGray.cols;
+    undistortParams.imageHeight = input.leftMarkerGray.rows;
+    for (int i = 0; i < 9 && i < input.R.rows * input.R.cols; ++i)
+        undistortParams.R[i] = input.R.at<double>(i / 3, i % 3);
+    for (int i = 0; i < 3 && i < input.T.rows; ++i)
+        undistortParams.T[i] = input.T.at<double>(i);
+
+    undistortOp.SetParams(undistortParams);
+    if (!input.R1.empty()) undistortOp.SetRectifyMatrices(input.R1, input.R2, input.P1, input.P2, input.Q);
+
+    auto undistortRes = undistortOp.Execute(mergeL.mergedEdgePoints, mergeR.mergedEdgePoints,
+                                             mergeL.groupIds, mergeR.groupIds);
+    if (!undistortRes.success) {
+        result.message = "undistort failed";
+        return result;
+    }
+
+    // ===== 2-7 ellipse_fit (per group, L/R) =====
+    report(65, "ellipse_fit...");
+    calib::EllipseFitCPU ellipseOp;
+
+    auto fitEllipses = [&](const std::vector<cv::Point2d>& rectifiedPoints,
+                           const std::vector<int>& groupIds, int groupCount) {
+        std::vector<calib::EllipseFitCPUResult> results;
+        for (int g = 0; g < groupCount; ++g) {
+            std::vector<cv::Point2d> groupPoints;
+            for (size_t i = 0; i < rectifiedPoints.size(); ++i)
+                if (i < groupIds.size() && groupIds[i] == g)
+                    groupPoints.push_back(rectifiedPoints[i]);
+            if (groupPoints.size() >= 5) {
+                auto er = ellipseOp.Execute(groupPoints);
+                if (er.success) results.push_back(std::move(er));
+            }
+        }
+        return results;
+    };
+
+    auto ellipsesL = fitEllipses(undistortRes.rectifiedPoints1, undistortRes.groupIds1, undistortRes.groupCount1);
+    auto ellipsesR = fitEllipses(undistortRes.rectifiedPoints2, undistortRes.groupIds2, undistortRes.groupCount2);
+
+    if (ellipsesL.empty() || ellipsesR.empty()) {
+        result.message = "ellipse_fit failed or empty";
+        return result;
+    }
+
+    // 提取中心（供阶段3和frame_fuse使用）
+    auto extractCenters = [](const std::vector<calib::EllipseFitCPUResult>& ellipses) {
+        std::vector<cv::Point2f> centers;
+        for (const auto& e : ellipses) centers.emplace_back((float)e.centerX, (float)e.centerY);
+        return centers;
+    };
+    result.leftCenters = extractCenters(ellipsesL);
+    result.rightCenters = extractCenters(ellipsesR);
+
+    // ===== 2-8 marker_match =====
+    report(70, "marker_match...");
+    calib::MarkerMatchCPU matchOp;
+    auto matchRes = matchOp.Execute(result.leftCenters, result.rightCenters);
+    if (!matchRes.success || matchRes.centerMatches.empty()) {
+        result.message = "marker_match failed";
+        return result;
+    }
+
+    // ===== 2-9 epipolar_intersect (L/R) =====
+    report(75, "epipolar_intersect...");
+    calib::EpipolarIntersectCPU epipolarOp;
+    auto epiL = epipolarOp.Execute(ellipsesL);
+    auto epiR = epipolarOp.Execute(ellipsesR);
+
+    // ===== 2-10 edge_match =====
+    report(80, "edge_match...");
+    calib::EdgeMatchCPU edgeMatchOp;
+    auto edgeMatchRes = edgeMatchOp.Execute(epiL.ellipseResults, epiR.ellipseResults, matchRes.centerMatches);
+    if (!edgeMatchRes.success) {
+        result.message = "edge_match failed";
+        return result;
+    }
+
+    // ===== 2-11 point_reconstruct =====
+    report(85, "point_reconstruct...");
+    calib::PointReconstructCPU reconstructOp;
+    calib::PointReconstructCPUParams reconParams;
+    reconParams.fxLeft = input.cameraMatrixL.at<double>(0, 0);
+    reconParams.fyLeft = input.cameraMatrixL.at<double>(1, 1);
+    reconParams.cxLeft = input.cameraMatrixL.at<double>(0, 2);
+    reconParams.cyLeft = input.cameraMatrixL.at<double>(1, 2);
+    reconParams.fxRight = input.cameraMatrixR.at<double>(0, 0);
+    reconParams.fyRight = input.cameraMatrixR.at<double>(1, 1);
+    reconParams.cxRight = input.cameraMatrixR.at<double>(0, 2);
+    reconParams.cyRight = input.cameraMatrixR.at<double>(1, 2);
+    for (int i = 0; i < 9 && i < input.R.rows * input.R.cols; ++i)
+        reconParams.R(i / 3, i % 3) = input.R.at<double>(i / 3, i % 3);
+    for (int i = 0; i < 3 && i < input.T.rows; ++i)
+        reconParams.T[i] = input.T.at<double>(i);
+    reconstructOp.SetParams(reconParams);
+    if (!input.P1.empty()) reconstructOp.SetProjectionMatrices(input.P1, input.P2, input.Q);
+
+    auto reconRes = reconstructOp.Execute(edgeMatchRes);
+    if (!reconRes.success || reconRes.markerResults.empty()) {
+        result.message = "point_reconstruct failed";
+        return result;
+    }
+
+    // 提取标记点3D位置和法线（供 frame_fuse 使用）
+    for (const auto& mr : reconRes.markerResults) {
+        if (mr.validPlane) {
+            result.markerPositions.emplace_back(mr.centerX, mr.centerY, mr.centerZ);
+            result.markerNormals.emplace_back(mr.normalX, mr.normalY, mr.normalZ);
+        }
+    }
+    if (result.markerPositions.empty()) {
+        result.message = "no valid 3D markers";
+        return result;
+    }
+
+    // ===== 2-12 frame_fuse =====
+    report(90, "frame_fuse...");
+    calib::FrameFuseCPU fuseOp;
+
+    calib::MarkerPointSet currentSet;
+    currentSet.positions = result.markerPositions;
+    currentSet.normals = result.markerNormals;
+
+    if (prevFrame && prevFrame->success && !prevFrame->markerPositions.empty()) {
+        calib::MarkerPointSet prevSet;
+        prevSet.positions = prevFrame->markerPositions;
+        prevSet.normals = prevFrame->markerNormals;
+        auto fuseRes = fuseOp.Execute(currentSet, prevSet);
+        if (fuseRes.success) {
+            result.R = fuseRes.R;
+            result.T = fuseRes.T;
+            result.transform = fuseRes.transform;
+        } else {
+            result.message = "frame_fuse failed";
+            return result;
+        }
+    } else {
+        // 第一帧：无配准，transform=identity
+        spdlog::info("pose_estimation: first frame, skip fuse");
+    }
+
+    // ===== 2-13 pose_estimate =====
+    report(95, "pose_estimate...");
+    calib::PoseEstimateCPU poseOp;
+    auto poseRes = poseOp.Execute(result.R, result.T);
+    result.anyMatched = poseRes.anyMatched;
+    result.bestMatch = poseRes.bestMatch;
+    if (poseRes.anyMatched && poseRes.bestMatch >= 0) {
+        result.matchedPoseName = poseRes.matches[poseRes.bestMatch].targetName;
+    }
+
+    report(100, "pose_estimation done");
     result.success = true;
     return result;
 }
