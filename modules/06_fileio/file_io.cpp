@@ -95,14 +95,28 @@ bool importPLY(const std::string& filepath,
     int vertexCount = 0;
     bool hasNormal = false;
     bool binary = false;
+    int vertexStride = 0;
+    bool inVertexSection = false;
 
-    // 读 header
     while (std::getline(f, line)) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
+            line.pop_back();
         if (line.find("format binary") != std::string::npos) binary = true;
-        if (line.find("element vertex") != std::string::npos)
+        if (line.find("element vertex") != std::string::npos) {
             sscanf(line.c_str(), "element vertex %d", &vertexCount);
+            inVertexSection = true;
+        } else if (line.find("element ") == 0) {
+            inVertexSection = false;
+        }
         if (line.find("property float nx") != std::string::npos) hasNormal = true;
-        if (line == "end_header" || line == "end_header\r") break;
+        if (inVertexSection && line.find("property ") == 0 && line.find("list") == std::string::npos) {
+            if (line.find("char") != std::string::npos)       vertexStride += 1;
+            else if (line.find("short") != std::string::npos)  vertexStride += 2;
+            else if (line.find("float") != std::string::npos)  vertexStride += 4;
+            else if (line.find("double") != std::string::npos) vertexStride += 8;
+            else if (line.find("int") != std::string::npos)    vertexStride += 4;
+        }
+        if (line == "end_header") break;
     }
 
     if (vertexCount <= 0) return false;
@@ -112,6 +126,9 @@ bool importPLY(const std::string& filepath,
     if (normals) normals->reserve(vertexCount);
 
     if (binary) {
+        int skipBytes = vertexStride - 12;
+        if (hasNormal) skipBytes -= 12;
+        if (skipBytes < 0) skipBytes = 0;
         for (int i = 0; i < vertexCount; ++i) {
             float xyz[3];
             f.read(reinterpret_cast<char*>(xyz), 12);
@@ -121,17 +138,19 @@ bool importPLY(const std::string& filepath,
                 f.read(reinterpret_cast<char*>(n), 12);
                 if (normals) normals->emplace_back(n[0], n[1], n[2]);
             }
+            if (skipBytes > 0) f.ignore(skipBytes);
         }
     } else {
         for (int i = 0; i < vertexCount; ++i) {
             float x, y, z;
-            f >> x >> y >> z;
+            if (!(f >> x >> y >> z)) break;
             points.emplace_back(x, y, z);
-            if (hasNormal) {
+            if (hasNormal && normals) {
                 float nx, ny, nz;
                 f >> nx >> ny >> nz;
-                if (normals) normals->emplace_back(nx, ny, nz);
+                normals->emplace_back(nx, ny, nz);
             }
+            f.ignore(256, '\n');
         }
     }
     return !points.empty();
