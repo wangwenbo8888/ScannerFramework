@@ -170,4 +170,84 @@ LaserCalibResult runLaserCalibration(const LaserCalibInput& input,
 bool saveLaserCalibResult(const std::string& filepath, const LaserCalibResult& result);
 bool loadLaserCalibResult(const std::string& filepath, LaserCalibResult& result);
 
+// ============================================================================
+// 完整标定流程（阶段0→2→3→4 编排）
+// ============================================================================
+
+struct CalibSessionConfig {
+    // 标定板参数
+    int chessboardCols = 6;
+    int chessboardRows = 7;
+    double squareSizeMm = 15.0;
+
+    // 25个目标姿态（名称+平移旋转阈值）
+    struct PoseTarget {
+        std::string name;
+        double tx, ty, tz;
+        double rx, ry, rz;
+        double posThreshold = 10.0;
+        double rotThreshold = 5.0;
+    };
+    std::vector<PoseTarget> poseTargets;
+
+    // 初始标定参数（从出厂标定或上次标定加载）
+    cv::Mat cameraMatrixL, distCoeffsL;
+    cv::Mat cameraMatrixR, distCoeffsR;
+    cv::Mat R, T;
+    cv::Mat R1, R2, P1, P2, Q;
+
+    // 投影机初始光心（机械装配公差）
+    double initialTx = 80.0;
+    double initialTy = 3.0;
+    double initialTz = 3.0;
+
+    // 温度补偿参数
+    double cte = 23.6e-6;
+    double referenceTemp = 25.0;
+    double tempStep = 2.0;
+    double tempRangeMin = -10.0;
+    double tempRangeMax = 10.0;
+
+    // 图像尺寸
+    int imageWidth = 2048;
+    int imageHeight = 1536;
+};
+
+// 单帧输入（姿态采集阶段每帧）
+struct CalibFrameInput {
+    cv::Mat leftMarkerGray;    // 标记点帧（CV_8UC1）
+    cv::Mat rightMarkerGray;
+    cv::Mat leftLaserGray;     // 激光管帧（CV_8UC1，可为空）
+    cv::Mat rightLaserGray;
+    double temperature = 25.0;
+};
+
+// 会话状态（供 UI 实时显示进度）
+struct CalibSessionState {
+    int collectedPoses = 0;
+    int targetPoseCount = 25;
+    std::vector<bool> poseCollected;
+    std::string lastMatchedPose;
+    std::string currentStep;
+    int frameCount = 0;
+};
+
+// 完整标定结果
+struct FullCalibResult {
+    bool success = false;
+    std::string message;
+    CalibSessionState session;
+
+    CameraCalibResult cameraCalib;
+    LaserCalibResult laserCalib;
+};
+
+// 完整标定流程编排
+// getNextFrame: 帧提供者回调，返回false=帧流结束
+// onProgress: 进度回调（姿态采集进度+标定步骤）
+FullCalibResult runFullCalibration(
+    const CalibSessionConfig& config,
+    std::function<bool(CalibFrameInput&)> getNextFrame,
+    std::function<void(const CalibSessionState&)> onProgress = nullptr);
+
 } // namespace calibration

@@ -921,4 +921,215 @@ bool loadLaserCalibResult(const std::string& filepath, LaserCalibResult& r)
     return r.success;
 }
 
+// ============================================================================
+// 完整标定流程（阶段0→2→3→4 编排）
+// ============================================================================
+FullCalibResult runFullCalibration(
+    const CalibSessionConfig& config,
+    std::function<bool(CalibFrameInput&)> getNextFrame,
+    std::function<void(const CalibSessionState&)> onProgress)
+{
+    FullCalibResult result;
+    CalibSessionState& state = result.session;
+    state.targetPoseCount = static_cast<int>(config.poseTargets.size());
+    if (state.targetPoseCount == 0) state.targetPoseCount = 25;
+    state.poseCollected.resize(state.targetPoseCount, false);
+
+    auto report = [&](const std::string& step) {
+        state.currentStep = step;
+        if (onProgress) onProgress(state);
+    };
+
+    // ===== 阶段2：姿态采集循环 =====
+    report("pose collection started");
+
+    PoseEstimationInput poseInput;
+    poseInput.cameraMatrixL = config.cameraMatrixL;
+    poseInput.distCoeffsL = config.distCoeffsL;
+    poseInput.cameraMatrixR = config.cameraMatrixR;
+    poseInput.distCoeffsR = config.distCoeffsR;
+    poseInput.R = config.R;
+    poseInput.T = config.T;
+    poseInput.R1 = config.R1;
+    poseInput.R2 = config.R2;
+    poseInput.P1 = config.P1;
+    poseInput.P2 = config.P2;
+    poseInput.Q = config.Q;
+    poseInput.chessboardCols = config.chessboardCols;
+    poseInput.chessboardRows = config.chessboardRows;
+    poseInput.squareSizeMm = config.squareSizeMm;
+
+    // 采集的图像和椭圆中心（供阶段3/4使用）
+    struct CollectedPose {
+        std::string name;
+        cv::Mat leftMarkerGray, rightMarkerGray;
+        std::vector<cv::Mat> leftLaserGrays, rightLaserGrays;
+        double temperature = 25.0;
+        std::vector<cv::Point2f> leftCenters, rightCenters;
+    };
+    std::vector<CollectedPose> collectedPoses;
+    PoseEstimationResult prevPoseResult;
+    std::string lastHitPose;
+    bool havePrev = false;
+
+    CalibFrameInput frame;
+    while (getNextFrame(frame)) {
+        state.frameCount++;
+
+        // 跳过空帧
+        if (frame.leftMarkerGray.empty() || frame.rightMarkerGray.empty()) {
+            report("frame " + std::to_string(state.frameCount) + ": empty, skip");
+            continue;
+        }
+
+        // 单帧姿态估计
+        poseInput.leftMarkerGray = frame.leftMarkerGray;
+        poseInput.rightMarkerGray = frame.rightMarkerGray;
+
+        PoseEstimationResult poseResult = runPoseEstimation(
+            poseInput,
+            havePrev ? &prevPoseResult : nullptr);
+
+        prevPoseResult = poseResult;
+        havePrev = true;
+
+        if (!poseResult.success || !poseResult.anyMatched) {
+            report("frame " + std::to_string(state.frameCount) + ": no pose match");
+            continue;
+        }
+
+        const std::string& hitPose = poseResult.matchedPoseName;
+        int poseIdx = poseResult.bestMatch;
+        if (poseIdx < 0 || poseIdx >= state.targetPoseCount) {
+            continue;
+        }
+
+        // 多帧确认：连续两帧命中同一姿态
+        if (hitPose == lastHitPose) {
+            // 确认命中，检查是否已采集
+            if (!state.poseCollected[poseIdx]) {
+                // 保存
+                CollectedPose cp;
+                cp.name = hitPose;
+                cp.temperature = frame.temperature;
+                cp.leftCenters = poseResult.leftCenters;
+                cp.rightCenters = poseResult.rightCenters;
+                // 如果有激光帧也保存
+                if (!frame.leftLaserGray.empty())
+                    cp.leftLaserGrays.push_back(frame.leftLaserGray.clone());
+                if (!frame.rightLaserGray.empty())
+                    cp.rightLaserGrays.push_back(frame.rightLaserGray.clone());
+
+                collectedPoses.push_back(std::move(cp));
+                state.poseCollected[poseIdx] = true;
+                state.collectedPoses++;
+
+                report("pose '" + hitPose + "' collected (" +
+                       std::to_string(state.collectedPoses) + "/" +
+                       std::to_string(state.targetPoseCount) + ")");
+
+                spdlog::info("calib: pose '{}' collected ({}/{})",
+                             hitPose, state.collectedPoses, state.targetPoseCount);
+
+                // 检查是否集齐
+                if (state.collectedPoses >= state.targetPoseCount) {
+                    report("all poses collected, starting calibration...");
+                    break;
+                }
+            }
+        }
+
+        lastHitPose = hitPose;
+        report("frame " + std::to_string(state.frameCount) + ": pose '" + hitPose + "' hit (confirming...)");
+    }
+
+    if (state.collectedPoses < state.targetPoseCount) {
+        result.message = "pose collection incomplete: " +
+                         std::to_string(state.collectedPoses) + "/" +
+                         std::to_string(state.targetPoseCount);
+        report(result.message);
+        return result;
+    }
+
+    // ===== 阶段3：相机标定 =====
+    report("stage 3: camera calibration...");
+
+    CameraCalibInput camInput;
+    camInput.imageWidth = config.imageWidth;
+    camInput.imageHeight = config.imageHeight;
+    camInput.cte = config.cte;
+    camInput.referenceTemp = config.referenceTemp;
+    camInput.tempStep = config.tempStep;
+    camInput.tempRangeMin = config.tempRangeMin;
+    camInput.tempRangeMax = config.tempRangeMax;
+    camInput.rectifyAlpha = -1.0;
+
+    // 收集所有姿态的角点（使用椭圆中心作为角点）
+    for (const auto& cp : collectedPoses) {
+        if (!cp.leftCenters.empty())
+            camInput.leftCorners.push_back(cp.leftCenters);
+        if (!cp.rightCenters.empty())
+            camInput.rightCorners.push_back(cp.rightCenters);
+    }
+
+    auto camReport = [&](int pct, const std::string& step) {
+        report("camera: " + step);
+    };
+    result.cameraCalib = runCameraCalibration(camInput, camReport);
+    if (!result.cameraCalib.success) {
+        result.message = "camera calibration failed: " + result.cameraCalib.message;
+        return result;
+    }
+    report("camera calibration done");
+
+    // ===== 阶段4：激光标定 =====
+    report("stage 4: laser calibration...");
+
+    LaserCalibInput laserInput;
+    laserInput.cameraCalib = &result.cameraCalib;
+    laserInput.initialTx = config.initialTx;
+    laserInput.initialTy = config.initialTy;
+    laserInput.initialTz = config.initialTz;
+    laserInput.cte = config.cte;
+    laserInput.referenceTemp = config.referenceTemp;
+    laserInput.tempStep = config.tempStep;
+    laserInput.tempRangeMin = config.tempRangeMin;
+    laserInput.tempRangeMax = config.tempRangeMax;
+
+    for (const auto& cp : collectedPoses) {
+        if (!cp.leftLaserGrays.empty() && !cp.rightLaserGrays.empty()) {
+            LaserPoseImages lpi;
+            lpi.leftLaserGray = cp.leftLaserGrays[0];
+            lpi.rightLaserGray = cp.rightLaserGrays[0];
+            lpi.temperature = cp.temperature;
+            laserInput.poses.push_back(std::move(lpi));
+        }
+    }
+
+    if (laserInput.poses.empty()) {
+        report("laser: no laser images collected, skipping laser calibration");
+        result.success = true;
+        result.message = "camera calibration done, laser skipped (no laser images)";
+        report("done");
+        return result;
+    }
+
+    auto laserReport = [&](int pct, const std::string& step) {
+        report("laser: " + step);
+    };
+    result.laserCalib = runLaserCalibration(laserInput, laserReport);
+    if (!result.laserCalib.success) {
+        result.message = "laser calibration failed: " + result.laserCalib.message;
+        // 相机标定成功，激光失败不致命
+        report("laser calibration failed, camera calibration OK");
+    } else {
+        report("laser calibration done");
+    }
+
+    result.success = result.cameraCalib.success;
+    result.message = "calibration complete";
+    report("done");
+    return result;
+}
+
 } // namespace calibration
