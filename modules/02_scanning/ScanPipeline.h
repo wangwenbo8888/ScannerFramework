@@ -152,6 +152,7 @@ private:
     std::unique_ptr<calib::FrameFuseCPU>             frameFuse_;
     bool isFirstFrame_ = true;
     calib::PrevFrameState prevState_;  // 上一帧状态（供光流配准用）
+    calib::GlobalMarkerSet globalMarkers_;  // 导入的全局标记点（情况C首帧配准用）
 
     // ---- 激光链算子 (CUDA) ----
     std::unique_ptr<calib::StegerExtractorCUDA>  steger_;

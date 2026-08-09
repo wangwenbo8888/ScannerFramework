@@ -445,6 +445,13 @@ bool exportOBJ(const std::string& filepath, const MeshData& mesh)
 
 bool importMarkers(const std::string& filepath, std::vector<osg::Vec3>& markers)
 {
+    // PLY 文件委托给点云导入
+    size_t dotPos = filepath.find_last_of('.');
+    std::string ext = (dotPos != std::string::npos) ? filepath.substr(dotPos + 1) : "";
+    if (ext == "ply" || ext == "PLY") {
+        return importPointCloud(filepath, markers, nullptr);
+    }
+
     std::ifstream f(filepath);
     if (!f.is_open()) return false;
     markers.clear();

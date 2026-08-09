@@ -133,6 +133,9 @@ protected:
     void scanLoop();
     void stopScan();
 
+    // 导入的全局标志点（点云扫描模式用）
+    std::vector<osg::Vec3> m_importedMarkers;
+
     // 系统信息面板
     QTimer *m_infoTimer = nullptr;
     

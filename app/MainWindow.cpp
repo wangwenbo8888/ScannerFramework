@@ -353,8 +353,7 @@ void MainWindow::onCalibDeviceClicked()
     if (!cam->isCapturing()) {
         statusBar()->showMessage(QStringLiteral("正在启动相机采集..."));
         QApplication::processEvents();
-        // 提高曝光（50ms），避免画面太暗
-        cam->setExposure(50.0);
+        cam->setExposure(5.0);
         auto r = cam->startAsyncCaptureContinuous([](const Scanner::hal::StereoFrame&) {});
         spdlog::info("calib: startAsyncCaptureContinuous success={} msg={}", r.success, r.message);
         if (!r.success) {
@@ -770,7 +769,24 @@ void MainWindow::onScanMesh() {
 
 void MainWindow::onScanPointCloud() {
     appendDebugLog(QStringLiteral(">>> 点击「点云扫描」"));
-    startScanWithConfig(Scanner::workflow::ScanConfig::ModeC(), 4);
+    if (m_importedMarkers.empty()) {
+        QMessageBox::warning(this, QStringLiteral("点云扫描"),
+            QStringLiteral("请先在「文件管理」中导入全局标志点"));
+        appendDebugLog(QStringLiteral("⚠ 未导入全局标志点，无法进行点云扫描"));
+        return;
+    }
+    auto config = Scanner::workflow::ScanConfig::ModeC();
+    // 导入标志点 → initialGlobalMarkers
+    config.initialGlobalMarkers.reserve(m_importedMarkers.size());
+    for (const auto& m : m_importedMarkers) {
+        calib::MarkerFuseInput mi;
+        mi.x = m.x(); mi.y = m.y(); mi.z = m.z();
+        mi.nx = 0; mi.ny = 0; mi.nz = 1;
+        mi.whiteRadius = 0;
+        config.initialGlobalMarkers.push_back(mi);
+    }
+    appendDebugLog(QStringLiteral("已加载 %1 个全局标志点").arg(m_importedMarkers.size()));
+    startScanWithConfig(config, 4);
 }
 
 void MainWindow::onStopScan() {
@@ -779,19 +795,22 @@ void MainWindow::onStopScan() {
 
 void MainWindow::stopScan() {
     if (!m_scanning) return;
-    spdlog::info("[Scan] 停止扫描 (模式={})", m_scanModeIdx);
+    appendDebugLog(QStringLiteral("<<< 停止扫描 (模式=%1)").arg(m_scanModeIdx));
     m_scanning = false;
     if (m_scanThread.joinable()) m_scanThread.join();
     m_scanModeIdx = -1;
 
-    auto* cam = m_appCtx ? m_appCtx->camera() : nullptr;
-    if (cam && cam->isCapturing()) cam->stopCapture();
+    // 不停相机采集（避免反复 stop/start 导致 Galaxy SDK 崩溃）
+    // 相机保持连续采集，只停扫描处理线程
 
     auto* scannerSerial = m_appCtx ? m_appCtx->scannerSerial() : nullptr;
     if (scannerSerial && scannerSerial->isOpen()) {
         scannerSerial->send("N11 H0;");
+        appendDebugLog(QStringLiteral("串口发送: N11 H0; (停止扫描)"));
         scannerSerial->send("N14 B0;");
+        appendDebugLog(QStringLiteral("串口发送: N14 B0; (补光灯关)"));
         scannerSerial->send("N13 L0;");
+        appendDebugLog(QStringLiteral("串口发送: N13 L0; (激光关)"));
     }
 
     statusBar()->showMessage(QStringLiteral("扫描已停止"));
@@ -879,7 +898,7 @@ void MainWindow::startScanWithConfig(const Scanner::workflow::ScanConfig& config
         statusBar()->showMessage(QStringLiteral("启动相机连续采集..."));
         QApplication::processEvents();
         try {
-            cam->setExposure(config.exposureMarkerMs);
+            cam->setExposure(5.0);
             auto r = cam->startAsyncCaptureContinuous([](const Scanner::hal::StereoFrame&) {});
             spdlog::info("[Scan] startAsyncCaptureContinuous success={}", r.success);
             if (!r.success) {
@@ -912,15 +931,15 @@ void MainWindow::scanLoop() {
             Scanner::hal::StereoFrame sf;
             auto gr = cam->grabFrame(sf, 3000);
             if (!gr.success || sf.leftGray.empty()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 continue;
             }
 
             ++frameCount;
             auto output = m_scanPipeline->processFrame(sf.leftGray, sf.rightGray);
 
-            // 定期更新3D视图（每50帧）
-            if (frameCount % 50 == 0 && m_3dView) {
+            // 定期更新3D视图（每30帧）
+            if (frameCount % 30 == 0 && m_3dView) {
                 const auto& markers = m_scanPipeline->getFusedMarkers();
                 if (!markers.empty()) {
                     std::vector<osg::Vec3> pts;
@@ -932,6 +951,10 @@ void MainWindow::scanLoop() {
                         if (m_3dView) m_3dView->loadPointCloud(pts);
                     });
                 }
+            }
+
+            if (frameCount % 100 == 0) {
+                appendDebugLog(QStringLiteral("已处理 %1 帧").arg(frameCount));
             }
         } catch (const std::exception& e) {
             spdlog::error("[Scan] 帧 {} 异常: {}", frameCount, e.what());
@@ -966,6 +989,16 @@ void MainWindow::scanLoop() {
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
+    QMessageBox msgBox(this);
+    msgBox.setWindowTitle(QStringLiteral("确认关闭"));
+    msgBox.setText(QStringLiteral("确认关闭扫描仪软件？"));
+    QPushButton* btnConfirm = msgBox.addButton(QStringLiteral("确认"), QMessageBox::YesRole);
+    msgBox.addButton(QStringLiteral("取消"), QMessageBox::NoRole);
+    msgBox.exec();
+    if (msgBox.clickedButton() != btnConfirm) {
+        event->ignore();
+        return;
+    }
     spdlog::info("[MainWindow] 正在关闭...");
 
     // 1. 停止扫描线程
@@ -1318,15 +1351,32 @@ QWidget *MainWindow::createToolBar()
                                    "QMenu::item { padding: 6px 24px; }"
                                    "QMenu::item:selected { background: #e0e0e0; }");
 
-                menu.addAction(QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe6\xa0\x87\xe5\xbf\x97\xe7\x82\xb9"), [this]() {
-                    QString path = QFileDialog::getOpenFileName(this, QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe6\xa0\x87\xe5\xbf\x97\xe7\x82\xb9"), "", "Marker Files (*.json *.txt)");
+                menu.addAction(QStringLiteral("导入标志点"), [this]() {
+                    QString path = QFileDialog::getOpenFileName(this, QStringLiteral("导入标志点"), "", "Marker Files (*.json *.txt *.ply)");
                     if (path.isEmpty()) return;
                     std::string spath = path.toStdString();
                     std::vector<osg::Vec3> markers;
-                    if (file_io::importMarkers(spath, markers))
-                        statusBar()->showMessage(QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe6\xa0\x87\xe5\xbf\x97\xe7\x82\xb9 %1 \xe4\xb8\xaa").arg(markers.size()));
-                    else
-                        statusBar()->showMessage(QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe5\xa4\xb1\xe8\xb4\xa5"));
+                    if (file_io::importMarkers(spath, markers)) {
+                        m_importedMarkers = markers;
+                        appendDebugLog(QStringLiteral("导入全局标志点 %1 个: %2").arg(markers.size()).arg(path));
+                        statusBar()->showMessage(QStringLiteral("已导入 %1 个全局标志点，可进行点云扫描").arg(markers.size()));
+
+                        // 在3D视图显示导入的标志点
+                        if (m_3dView && !markers.empty()) {
+                            m_3dView->clearScene();
+                            m_3dView->loadPointCloud(markers);
+                            m_3dView->setCenterOverlayVisible(true);
+                            auto* manip = new osgGA::TrackballManipulator();
+                            m_3dView->setCameraManipulator(manip);
+                            manip->home(0);
+                        }
+
+                        QMessageBox::information(this, QStringLiteral("导入成功"),
+                            QStringLiteral("已导入 %1 个全局标志点。\n点击「点云扫描」开始配准扫描。").arg(markers.size()));
+                    } else {
+                        statusBar()->showMessage(QStringLiteral("导入失败"));
+                        QMessageBox::warning(this, QStringLiteral("导入失败"), QStringLiteral("无法解析标志点文件"));
+                    }
                 });
                 menu.addAction(QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe7\x82\xb9\xe4\xba\x91"), [this]() {
                     QString path = QFileDialog::getOpenFileName(this, QStringLiteral("\xe5\xaf\xbc\xe5\x85\xa5\xe7\x82\xb9\xe4\xba\x91"), "", "Point Cloud (*.ply *.pcd *.xyz *.txt);;All Files (*.*)");

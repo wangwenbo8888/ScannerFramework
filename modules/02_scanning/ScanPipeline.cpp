@@ -173,10 +173,16 @@ bool ScanPipeline::initialize() {
             }
         }
 
-        // 情况C: 预填充导入标记点
+        // 情况C: 预填充导入标记点 + 构建全局标记点集
         if (!config_.initialGlobalMarkers.empty() && markerFuse_) {
             markerFuse_->Seed(config_.initialGlobalMarkers);
-            spdlog::info("[ScanPipeline] 导入 {} 个已知标记点", config_.initialGlobalMarkers.size());
+            // 构建 GlobalMarkerSet（供首帧配准对齐用）
+            for (const auto& m : config_.initialGlobalMarkers) {
+                globalMarkers_.positions.emplace_back(m.x, m.y, m.z);
+                globalMarkers_.normals.emplace_back(m.nx, m.ny, m.nz);
+            }
+            spdlog::info("[ScanPipeline] 情况C: 导入 {} 个全局标记点 (Seed + GlobalMarkerSet)",
+                config_.initialGlobalMarkers.size());
         }
 
         initialized_ = true;
@@ -197,6 +203,7 @@ void ScanPipeline::reset() {
     if (laserFuseCpu_) laserFuseCpu_->Clear();
     isFirstFrame_ = true;
     prevState_ = {};
+    globalMarkers_ = {};
     frameCount_ = 0;
 }
 
@@ -469,10 +476,32 @@ ScanFrameOutput ScanPipeline::processMarkerBranch(
         if (norm3d.size() < pos3d.size()) norm3d.resize(pos3d.size(), cv::Vec3d(0, 0, 1));
 
         if (isFirstFrame_) {
-            output.R = cv::Matx33d::eye();
-            output.T = cv::Vec3d(0, 0, 0);
             isFirstFrame_ = false;
-            spdlog::info("[ScanPipeline] 首帧: R=I T=0");
+            if (opticalFlow_ && !globalMarkers_.empty()) {
+                // 情况C: 首帧对齐到导入的全局标记点
+                try {
+                    auto regR = opticalFlow_->Execute(pos3d, norm3d, prevState_, globalMarkers_);
+                    if (regR.success) {
+                        output.R = regR.R;
+                        output.T = regR.T;
+                        spdlog::info("[ScanPipeline] 首帧(情况C): 对齐全局标记点 matched={}/{} rmse={:.3f}",
+                            regR.getMatchedCount(), pos3d.size(), regR.statistics.rmse);
+                    } else {
+                        output.R = cv::Matx33d::eye();
+                        output.T = cv::Vec3d(0, 0, 0);
+                        spdlog::warn("[ScanPipeline] 首帧全局对齐失败: {} → R=I T=0", regR.message);
+                    }
+                } catch (const std::exception& e) {
+                    output.R = cv::Matx33d::eye();
+                    output.T = cv::Vec3d(0, 0, 0);
+                    spdlog::warn("[ScanPipeline] 首帧全局对齐异常: {}", e.what());
+                }
+            } else {
+                // 情况A/B: 首帧 R=I T=0
+                output.R = cv::Matx33d::eye();
+                output.T = cv::Vec3d(0, 0, 0);
+                spdlog::info("[ScanPipeline] 首帧: R=I T=0");
+            }
         } else if (opticalFlow_ && !prevState_.empty()) {
             try {
                 auto regR = opticalFlow_->Execute(pos3d, norm3d, prevState_);
