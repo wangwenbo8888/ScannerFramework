@@ -10,8 +10,8 @@
 #include <QHBoxLayout>
 #include <QStackedWidget>
 #include <QPaintEvent>
-#include <QSlider>
 #include <QSvgRenderer>
+#include <opencv2/core.hpp>
 
 #include "OSGWidget.h"
 
@@ -103,6 +103,15 @@ protected:
 
     QWidget *m_integrateTestDialog;
     CalibDialog *m_calibDialog;
+    struct CameraCalibResultHolder {
+        bool success = false;
+        // 简化：只存关键矩阵，避免头文件依赖calib_workflow.h
+        cv::Mat cameraMatrixL, distCoeffsL, cameraMatrixR, distCoeffsR;
+        cv::Mat R, T, R1, R2, P1, P2, Q;
+        double intrinsicRMS = 0;
+        double stereoReprojError = 0;
+        bool hasTempTables = false;
+    } m_lastCameraCalib;
     LEADSCANSeries *m_series = nullptr;
 
     // 系统信息面板

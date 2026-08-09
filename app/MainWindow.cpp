@@ -3,18 +3,19 @@
 #include "data/DeviceStateCache.h"
 #include "data/PointCloudBuffer.h"
 #include "CalibDialog.h"
+#include "calib_workflow.h"
 #include "CalibDisplay.h"
 #include "IntegrateTestDialog.h"
 #include "ScannerWindow.h"
 #include "stubs/LEADSCANSeries.h"
 #include "stubs/CameraControl.h"
-#include "stubs/camera_calib_workflow.h"
-#include "stubs/laser_calib_workflow.h"
 #include "stubs/scan_workflow.h"
 #include "file_io.h"
 #include <osg/Vec3>
 #include <osg/Matrix>
 #include <osgGA/TrackballManipulator>
+#include <opencv2/imgproc.hpp>
+#include <opencv2/calib3d.hpp>
 #include <QPainter>
 #include <QPainterPath>
 #include <QApplication>
@@ -181,127 +182,20 @@ void MainWindow::onReloadPointCloud()
 
 void MainWindow::onCalibDeviceClicked()
 {
-    {
-        FILE* f = fopen("E:/workfold/20260509intergrate/calib_debug.log", "a");
-        if (f) { fprintf(f, "[%s] onCalibDeviceClicked ENTER m_3dView=%p\n", __TIME__, (void*)m_3dView); fclose(f); }
-    }
-    if (!m_calibDialog) {
-        m_calibDialog = new CalibDialog(this);
-        connect(m_calibDialog, &CalibDialog::cameraCalibClicked, this, [this]() {
-            statusBar()->showMessage(QStringLiteral("相机标定：正在打开相机..."));
-
-            auto* series = static_cast<LEADSCANSeries*>(m_integrateTestDialog);
-            if (!series) {
-                if (!m_integrateTestDialog) {
-                    m_integrateTestDialog = new LEADSCANSeries();
-                }
-                series = static_cast<LEADSCANSeries*>(m_integrateTestDialog);
-            }
-            auto* cam = series->getCameraControl();
-            if (!cam || !cam->isScannerCameraOpen()) {
-                QMessageBox::warning(this, QStringLiteral("相机标定"), QStringLiteral("请先在集成测试中打开扫描相机"));
-                return;
-            }
-
-            const int numFrames = 15;
-            calibration::CameraCalibInput input;
-            input.imageWidth = 2048;
-            input.imageHeight = 1536;
-
-            for (int i = 0; i < numFrames; ++i) {
-                statusBar()->showMessage(QStringLiteral("采集标定图像 %1/%2").arg(i + 1).arg(numFrames));
-                QApplication::processEvents();
-
-                cv::Mat left, right;
-                cam->GetScannerImages(left, right, 10000);
-                if (!left.empty() && !right.empty()) {
-                    input.leftImages.push_back(left.clone());
-                    input.rightImages.push_back(right.clone());
-                }
-            }
-
-            statusBar()->showMessage(QStringLiteral("正在执行相机标定算法..."));
-            QApplication::processEvents();
-
-            calibration::CameraCalibWorkflow workflow;
-            workflow.setProgressCallback([this](int pct, const std::string& step) {
-                statusBar()->showMessage(QString::fromStdString(step) + " (" + QString::number(pct) + "%)");
-                QApplication::processEvents();
-            });
-
-            auto result = workflow.run(input);
-            if (result.success) {
-                QMessageBox::information(this, QStringLiteral("相机标定"),
-                    QStringLiteral("标定完成!\n左重投影误差: %1\n右重投影误差: %2\n立体重投影误差: %3")
-                    .arg(result.reprojError, 0, 'f', 4));
-            } else {
-                QMessageBox::warning(this, QStringLiteral("相机标定"), QString::fromStdString(result.message));
-            }
-        });
-        connect(m_calibDialog, &CalibDialog::laserCalibClicked, this, [this]() {
-            statusBar()->showMessage(QStringLiteral("激光线标定：正在打开相机..."));
-
-            auto* series = static_cast<LEADSCANSeries*>(m_integrateTestDialog);
-            if (!series) {
-                if (!m_integrateTestDialog) {
-                    m_integrateTestDialog = new LEADSCANSeries();
-                }
-                series = static_cast<LEADSCANSeries*>(m_integrateTestDialog);
-            }
-            auto* cam = series->getCameraControl();
-            if (!cam || !cam->isScannerCameraOpen()) {
-                QMessageBox::warning(this, QStringLiteral("激光线标定"), QStringLiteral("请先在集成测试中打开扫描相机"));
-                return;
-            }
-
-            statusBar()->showMessage(QStringLiteral("采集激光线图像..."));
-            QApplication::processEvents();
-
-            cv::Mat left, right;
-            cam->GetScannerImages(left, right, 10000);
-            if (left.empty() || right.empty()) {
-                QMessageBox::warning(this, QStringLiteral("激光线标定"), QStringLiteral("图像采集失败"));
-                return;
-            }
-
-            statusBar()->showMessage(QStringLiteral("正在执行激光线标定算法..."));
-            QApplication::processEvents();
-
-            calibration::LaserCalibWorkflow workflow;
-            workflow.setProgressCallback([this](int pct, const std::string& step) {
-                statusBar()->showMessage(QString::fromStdString(step) + " (" + QString::number(pct) + "%)");
-                QApplication::processEvents();
-            });
-
-            calibration::LaserCalibInput input;
-            input.leftImage = left;
-            input.rightImage = right;
-
-            auto result = workflow.run(input);
-            if (result.success) {
-                QMessageBox::information(this, QStringLiteral("激光线标定"),
-                    QStringLiteral("标定完成!\n激光线数: %1\n端点数: %2")
-                    .arg(result.lineCount).arg(result.totalEndpoints));
-            } else {
-                QMessageBox::warning(this, QStringLiteral("激光线标定"), QString::fromStdString(result.message));
-            }
-        });
-    }
-    // 分屏：左 3D 扫描仪 + 右 2D 标定板
+    // ===== 一键完整标定流程 =====
+    // 设置标定显示视图（扫描仪模型 + 姿态引导）
     if (m_3dView && m_3dViewArea) {
-        // 隐藏悬浮工具条
         if (m_floatingToolbar) {
             m_floatingToolbar->setVisible(false);
             m_floatingToolbar->hide();
             m_floatingToolbar->move(-10000, -10000);
         }
 
-        // 加载扫描仪 STL 到 3D 视图
         std::string stlTarget = "E:/workfold/framework/build/JEAMMSCAN.stl";
         osg::ref_ptr<osg::Group> scene = calib_display::buildCalibScene(stlTarget);
         m_3dView->setSceneData(scene);
         m_3dView->setCenterOverlayVisible(false);
-        // 设置视角：X横、Y竖、Z朝外（正前视图）
+
         auto* manip = new osgGA::TrackballManipulator();
         osg::BoundingSphere bs = scene->getBound();
         double dist = 500.0;
@@ -312,93 +206,233 @@ void MainWindow::onCalibDeviceClicked()
         );
         m_3dView->setCameraManipulator(manip);
         manip->home(0);
-        // 固定模型：锁定视角（禁止旋转和缩放）
         m_3dView->viewer()->frame();
         osg::Matrix lockedView = m_3dView->viewer()->getCamera()->getViewMatrix();
         m_3dView->setCameraManipulator(nullptr);
         m_3dView->viewer()->getCamera()->setViewMatrix(lockedView);
-
-        // 创建 2D 标定板 + 彩条（ArrowSlider，和远近一样的风格）
-        if (!m_calibBoard2D) {
-            m_calibBoard2D = new calib_display::CalibBoard2D();
-            auto* viewContainer = m_3dView->parentWidget();
-            auto* hLayout = qobject_cast<QHBoxLayout*>(viewContainer->layout());
-            auto* viewArea = viewContainer->parentWidget();
-            auto* vLayout = qobject_cast<QVBoxLayout*>(viewArea->layout());
-
-            // 上侧横排：左右（ArrowSlider 水平 + 标签），两侧留 10% 空白使总长 80%
-            if (vLayout) {
-                auto* lrWidget = new QWidget();
-                lrWidget->setObjectName("calibLrBar");
-                lrWidget->setFixedHeight(60);
-                auto* lrLayout = new QHBoxLayout(lrWidget);
-                lrLayout->setContentsMargins(0, 10, 0, 10);
-                lrLayout->setSpacing(4);
-                lrLayout->addStretch(1);  // 左侧 10% 空白
-                auto* labelL = new QLabel(QStringLiteral("\xe5\xb7\xa6"));  // 左
-                labelL->setAlignment(Qt::AlignCenter);
-                labelL->setStyleSheet("color: #0066FF; font-size: 14px; font-weight: bold;");
-                auto* lrSlider = new ArrowSlider(Qt::Horizontal);
-                lrSlider->setRange(0, 100);
-                lrSlider->setValue(50);
-                lrSlider->setFixedHeight(48);
-                lrSlider->setMinimumWidth(200);
-                lrSlider->setGroovePixmap(renderSvg(":/icons/resources/icons/div.color-gradient-bar.svg", 800, 24));
-                auto* labelR = new QLabel(QStringLiteral("\xe5\x8f\xb3"));  // 右
-                labelR->setAlignment(Qt::AlignCenter);
-                labelR->setStyleSheet("color: #FF0000; font-size: 14px; font-weight: bold;");
-                lrLayout->addWidget(labelL);
-                lrLayout->addWidget(lrSlider, 8);  // 80% 比例
-                lrLayout->addWidget(labelR);
-                lrLayout->addStretch(1);  // 右侧 10% 空白
-                vLayout->insertWidget(0, lrWidget);
-            }
-
-            // 右侧竖排：前后（ArrowSlider 垂直 + 标签，和远近一样）
-            if (hLayout) {
-                hLayout->addWidget(m_calibBoard2D, 1);
-                // 前后容器（和远近完全一样的结构）
-                auto* fbWidget = new QWidget();
-                fbWidget->setObjectName("calibFbBar");
-                auto* fbLayout = new QVBoxLayout(fbWidget);
-                fbLayout->setContentsMargins(6, 10, 6, 10);
-                auto* labelF = new QLabel(QStringLiteral("\xe5\x89\x8d"));  // 前
-                labelF->setAlignment(Qt::AlignCenter);
-                labelF->setStyleSheet("color: #0066FF; font-size: 14px; font-weight: bold;");
-                fbLayout->addWidget(labelF);
-                auto* fbSlider = new ArrowSlider(Qt::Vertical);
-                fbSlider->setObjectName("fbSlider");
-                fbSlider->setRange(0, 100);
-                fbSlider->setValue(50);
-                fbSlider->setFixedWidth(48);
-                fbSlider->setMinimumHeight(200);
-                fbSlider->setGroovePixmap(renderSvg(":/icons/resources/icons/div.color-gradient-bar.svg", 24, 800));
-                fbSlider->setStyleSheet(
-                    "QSlider#fbSlider::groove:vertical { background: transparent; }"
-                    "QSlider#fbSlider::handle:vertical { background: transparent; width: 20px; height: 16px; }"
-                    "QSlider#fbSlider::sub-page:vertical { background: transparent; }"
-                    "QSlider#fbSlider::add-page:vertical { background: transparent; }"
-                );
-                fbLayout->addWidget(fbSlider, 1);
-                auto* labelB = new QLabel(QStringLiteral("\xe5\x90\x8e"));  // 后
-                labelB->setAlignment(Qt::AlignCenter);
-                labelB->setStyleSheet("color: #FF0000; font-size: 14px; font-weight: bold;");
-                fbLayout->addWidget(labelB);
-                hLayout->addWidget(fbWidget);
-            }
-        }
-        // 每次进入标定都显示（第二次以后也能显示）
-        m_calibBoard2D->show();
-        m_calibBoard2D->update();
-        {
-            auto* va = m_3dView ? m_3dView->parentWidget()->parentWidget() : nullptr;
-            if (va) { auto* b = va->findChild<QWidget*>("calibLrBar"); if (b) b->show(); }
-            auto* vc = m_3dView ? m_3dView->parentWidget() : nullptr;
-            if (vc) { auto* b = vc->findChild<QWidget*>("calibFbBar"); if (b) b->show(); }
-        }
-
-        statusBar()->showMessage(QStringLiteral("标定显示模式"));
     }
+
+    // 创建/显示 2D 标定板 + 姿态偏差彩条
+    if (!m_calibBoard2D) {
+        m_calibBoard2D = new calib_display::CalibBoard2D();
+        auto* viewContainer = m_3dView ? m_3dView->parentWidget() : nullptr;
+        auto* hLayout = viewContainer ? qobject_cast<QHBoxLayout*>(viewContainer->layout()) : nullptr;
+        auto* viewArea = viewContainer ? viewContainer->parentWidget() : nullptr;
+        auto* vLayout = viewArea ? qobject_cast<QVBoxLayout*>(viewArea->layout()) : nullptr;
+
+        // 标定板加入右侧布局（和3D视图并排，各占一半）
+        if (hLayout) {
+            m_calibBoard2D->setMinimumWidth(300);
+            m_calibBoard2D->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+            hLayout->addWidget(m_calibBoard2D, 1);
+        }
+
+        if (vLayout) {
+            auto* lrWidget = new QWidget();
+            lrWidget->setObjectName("calibLrBar");
+            lrWidget->setFixedHeight(60);
+            auto* lrLayout = new QHBoxLayout(lrWidget);
+            lrLayout->setContentsMargins(0, 10, 0, 10);
+            lrLayout->setSpacing(4);
+            lrLayout->addStretch(1);
+            auto* labelL = new QLabel(QStringLiteral("\xe5\xb7\xa6"));
+            labelL->setAlignment(Qt::AlignCenter);
+            labelL->setStyleSheet("color: #0066FF; font-size: 14px; font-weight: bold;");
+            auto* lrSlider = new ArrowSlider(Qt::Horizontal);
+            lrSlider->setRange(0, 100);
+            lrSlider->setValue(50);
+            lrSlider->setFixedHeight(48);
+            lrSlider->setMinimumWidth(200);
+            lrSlider->setGroovePixmap(renderSvg(":/icons/resources/icons/div.color-gradient-bar.svg", 800, 24));
+            auto* labelR = new QLabel(QStringLiteral("\xe5\x8f\xb3"));
+            labelR->setAlignment(Qt::AlignCenter);
+            labelR->setStyleSheet("color: #FF0000; font-size: 14px; font-weight: bold;");
+            lrLayout->addWidget(labelL);
+            lrLayout->addWidget(lrSlider, 8);
+            lrLayout->addWidget(labelR);
+            lrLayout->addStretch(1);
+            vLayout->insertWidget(0, lrWidget);
+
+            auto* fbWidget = new QWidget();
+            fbWidget->setObjectName("calibFbBar");
+            fbWidget->setFixedWidth(60);
+            auto* fbLayout = new QVBoxLayout(fbWidget);
+            fbLayout->setContentsMargins(10, 0, 10, 0);
+            fbLayout->setSpacing(4);
+            auto* labelF = new QLabel(QStringLiteral("\xe5\x89\x8d"));
+            labelF->setAlignment(Qt::AlignCenter);
+            labelF->setStyleSheet("color: #0066FF; font-size: 14px; font-weight: bold;");
+            auto* fbSlider = new ArrowSlider(Qt::Vertical);
+            fbSlider->setRange(0, 100);
+            fbSlider->setValue(50);
+            fbSlider->setFixedWidth(48);
+            fbSlider->setMinimumHeight(200);
+            fbSlider->setGroovePixmap(renderSvg(":/icons/resources/icons/div.color-gradient-bar.svg", 24, 800));
+            auto* labelB = new QLabel(QStringLiteral("\xe5\x90\x8e"));
+            labelB->setAlignment(Qt::AlignCenter);
+            labelB->setStyleSheet("color: #FF0000; font-size: 14px; font-weight: bold;");
+            fbLayout->addWidget(labelF);
+            fbLayout->addWidget(fbSlider, 1);
+            fbLayout->addWidget(labelB);
+            if (hLayout) hLayout->addWidget(fbWidget);
+        }
+    }
+
+    if (m_calibBoard2D) m_calibBoard2D->show();
+    {
+        auto* va = m_3dView ? m_3dView->parentWidget()->parentWidget() : nullptr;
+        if (va) { auto* b = va->findChild<QWidget*>("calibLrBar"); if (b) b->show(); }
+        auto* vc = m_3dView ? m_3dView->parentWidget() : nullptr;
+        if (vc) { auto* b = vc->findChild<QWidget*>("calibFbBar"); if (b) b->show(); }
+    }
+
+    auto* cam = m_appCtx ? m_appCtx->camera() : nullptr;
+    if (!cam) {
+        QMessageBox::warning(this, QStringLiteral("标定"), QStringLiteral("相机模块未初始化"));
+        return;
+    }
+
+    // 自动开相机
+    if (!cam->isOpen()) {
+        statusBar()->showMessage(QStringLiteral("正在打开相机..."));
+        QApplication::processEvents();
+        auto r = cam->open();
+        if (!r.success) {
+            QMessageBox::warning(this, QStringLiteral("标定"),
+                QStringLiteral("相机打开失败: %1").arg(QString::fromStdString(r.message)));
+            return;
+        }
+    }
+    if (!cam->isCapturing()) {
+        statusBar()->showMessage(QStringLiteral("正在启动采集..."));
+        QApplication::processEvents();
+        cam->startCapture();
+    }
+
+    statusBar()->showMessage(QStringLiteral("标定开始：请移动设备采集25个姿态..."));
+    QApplication::processEvents();
+
+    // 构建标定配置
+    calibration::CalibSessionConfig config;
+    config.imageWidth = 2048;
+    config.imageHeight = 1536;
+    config.chessboardCols = calibration::CHESSBOARD_COLS;
+    config.chessboardRows = calibration::CHESSBOARD_ROWS;
+    config.squareSizeMm = calibration::CHESSBOARD_SQUARE_MM;
+    config.cte = 23.6e-6;
+    config.referenceTemp = 25.0;
+    config.initialTx = 80.0;
+    config.initialTy = 3.0;
+    config.initialTz = 3.0;
+
+    // 25 个目标姿态（简化：均匀网格）
+    for (int i = 0; i < 25; ++i) {
+        calibration::CalibSessionConfig::PoseTarget t;
+        t.name = "Pose_" + std::to_string(i + 1);
+        t.tx = 0; t.ty = 0; t.tz = 0;
+        t.rx = 0; t.ry = 0; t.rz = 0;
+        t.posThreshold = 15.0;
+        t.rotThreshold = 8.0;
+        config.poseTargets.push_back(t);
+    }
+
+    // 帧提供者：从相机采集
+    int frameTimeoutMs = 5000;
+    auto getNextFrame = [this, cam, frameTimeoutMs](calibration::CalibFrameInput& frame) -> bool {
+        Scanner::hal::StereoFrame sf;
+        auto r = cam->grabFrame(sf, frameTimeoutMs);
+        if (!r.success || sf.leftGray.empty()) return false;
+        frame.leftMarkerGray = sf.leftGray;
+        frame.rightMarkerGray = sf.rightGray;
+        frame.temperature = cam->getTemperature();
+        return true;
+    };
+
+    // 进度回调
+    auto onProgress = [this](const calibration::CalibSessionState& state) {
+        statusBar()->showMessage(QString::fromStdString(state.currentStep) +
+            QStringLiteral(" | 已采集: %1/%2 | 帧数: %3")
+            .arg(state.collectedPoses)
+            .arg(state.targetPoseCount)
+            .arg(state.frameCount));
+        QApplication::processEvents();
+    };
+
+    // 执行完整标定
+    auto result = calibration::runFullCalibration(config, getNextFrame, onProgress);
+
+    // 停止采集
+    cam->stopCapture();
+
+    if (!result.success) {
+        QMessageBox::warning(this, QStringLiteral("标定失败"), QString::fromStdString(result.message));
+        statusBar()->showMessage(QStringLiteral("标定失败: %1").arg(QString::fromStdString(result.message)));
+        return;
+    }
+
+    // 保存结果
+    calibration::saveCalibResult("calibration.json", result.cameraCalib);
+    if (result.laserCalib.success)
+        calibration::saveLaserCalibResult("laser_calib.json", result.laserCalib);
+
+    // 存到成员（供后续扫描使用）
+    m_lastCameraCalib.success = true;
+    m_lastCameraCalib.cameraMatrixL = result.cameraCalib.cameraMatrixL;
+    m_lastCameraCalib.distCoeffsL = result.cameraCalib.distCoeffsL;
+    m_lastCameraCalib.cameraMatrixR = result.cameraCalib.cameraMatrixR;
+    m_lastCameraCalib.distCoeffsR = result.cameraCalib.distCoeffsR;
+    m_lastCameraCalib.R = result.cameraCalib.R;
+    m_lastCameraCalib.T = result.cameraCalib.T;
+    m_lastCameraCalib.R1 = result.cameraCalib.R1;
+    m_lastCameraCalib.R2 = result.cameraCalib.R2;
+    m_lastCameraCalib.P1 = result.cameraCalib.P1;
+    m_lastCameraCalib.P2 = result.cameraCalib.P2;
+    m_lastCameraCalib.Q = result.cameraCalib.Q;
+
+    // 汇总标定误差
+    QString summary = QStringLiteral(
+        "====== 标定完成 ======\n\n"
+        "【采集统计】\n"
+        "  目标姿态数: %1\n"
+        "  已采集姿态: %2\n"
+        "  总帧数: %3\n\n"
+        "【相机标定误差】\n"
+        "  内参 RMS: %4 px\n"
+        "  立体重投影误差: %5 px\n"
+        "  有效帧数: %6\n"
+        "  温度补偿表: %7\n\n")
+        .arg(result.session.targetPoseCount)
+        .arg(result.session.collectedPoses)
+        .arg(result.session.frameCount)
+        .arg(result.cameraCalib.intrinsicRMS, 0, 'f', 4)
+        .arg(result.cameraCalib.stereoReprojError, 0, 'f', 4)
+        .arg(result.cameraCalib.validFrameCount)
+        .arg(result.cameraCalib.hasTempTables ? QStringLiteral("已生成") : QStringLiteral("未生成"));
+
+    if (result.laserCalib.success) {
+        summary += QStringLiteral(
+            "【激光标定结果】\n"
+            "  投影机光心 T: (%1, %2, %3) mm\n"
+            "  最终 RMS: %4\n"
+            "  优化改善率: %5\n"
+            "  姿态数: %6\n"
+            "  总点数: %7\n")
+            .arg(result.laserCalib.projectorT[0], 0, 'f', 2)
+            .arg(result.laserCalib.projectorT[1], 0, 'f', 2)
+            .arg(result.laserCalib.projectorT[2], 0, 'f', 2)
+            .arg(result.laserCalib.finalRms, 0, 'f', 4)
+            .arg(result.laserCalib.improvementRatio, 0, 'f', 2)
+            .arg(result.laserCalib.poseCount)
+            .arg(result.laserCalib.totalPointCount);
+    } else {
+        summary += QStringLiteral("\n【激光标定】跳过或失败: %1\n")
+            .arg(QString::fromStdString(result.laserCalib.message));
+    }
+
+    summary += QStringLiteral("\n标定参数已保存: calibration.json / laser_calib.json");
+
+    QMessageBox::information(this, QStringLiteral("标定结果"), summary);
+    statusBar()->showMessage(QStringLiteral("标定完成"));
 }
 
 void MainWindow::onScanClicked()
