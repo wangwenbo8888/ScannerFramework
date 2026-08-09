@@ -9,6 +9,7 @@
 #include "ScanPipeline.h"
 #include <spdlog/spdlog.h>
 #include <opencv2/imgproc.hpp>
+#include <opencv2/imgcodecs.hpp>
 #include <chrono>
 
 // 预处理
@@ -111,6 +112,12 @@ bool ScanPipeline::initialize() {
         zernike_ = std::make_unique<calib::ZernikeEdgeCPU>();
         ellipseFit_ = std::make_unique<calib::EllipseFitCPU>();
         markerMatch_ = std::make_unique<calib::MarkerMatchCPU>();
+        // 调大 max_points（默认100太小）
+        {
+            calib::MarkerMatchCPUParams mp = markerMatch_->GetParams();
+            mp.max_points = 500;
+            markerMatch_->SetParams(mp);
+        }
         pointReconstruct_ = std::make_unique<calib::PointReconstructCPU>();
         spdlog::info("[ScanPipeline] 标记点链OK");
 
@@ -193,6 +200,13 @@ ScanFrameOutput ScanPipeline::processFrame(const cv::Mat& leftGray, const cv::Ma
 
     auto t0 = std::chrono::steady_clock::now();
     ++frameCount_;
+
+    // 首帧保存诊断图像
+    if (frameCount_ == 1) {
+        cv::imwrite("scan_debug_left.png", leftGray);
+        cv::imwrite("scan_debug_right.png", rightGray);
+        spdlog::info("[ScanPipeline] 首帧已保存 scan_debug_left/right.png");
+    }
 
     try {
         // ===== 预处理: mask_separation (CUDA) — 分别处理左右图 =====
@@ -286,38 +300,52 @@ ScanFrameOutput ScanPipeline::processMarkerBranch(
 
         cv::Mat lbl, stt, cen;
         int n = cv::connectedComponentsWithStats(mask, lbl, stt, cen, 8, CV_32S);
+        int skipped = 0;
         for (int i = 1; i < n; ++i) {
             int area = stt.at<int>(i, cv::CC_STAT_AREA);
-            if (area < 15 || area > 5000) continue;
+            if (area < 15 || area > 5000) { skipped++; continue; }
             int x = std::max(0, (int)stt.at<int>(i, cv::CC_STAT_LEFT) - 5);
             int y = std::max(0, (int)stt.at<int>(i, cv::CC_STAT_TOP) - 5);
             int w = std::min(gray.cols - x, (int)stt.at<int>(i, cv::CC_STAT_WIDTH) + 10);
             int h = std::min(gray.rows - y, (int)stt.at<int>(i, cv::CC_STAT_HEIGHT) + 10);
-            if (w < 5 || h < 5) continue;
+            if (w < 5 || h < 5) { skipped++; continue; }
 
-            cv::Mat sub = gray(cv::Rect(x, y, w, h)).clone();
-            auto zr = zernike_->Execute(sub);
-            if (!zr.success || zr.edgePoints.empty()) continue;
+            try {
+                cv::Mat sub = gray(cv::Rect(x, y, w, h)).clone();
+                auto zr = zernike_->Execute(sub);
+                if (!zr.success || zr.edgePoints.empty()) { skipped++; continue; }
 
-            auto er = ellipseFit_->Execute(zr.edgePoints);
-            if (!er.success) continue;
+                auto er = ellipseFit_->Execute(zr.edgePoints);
+                if (!er.success) { skipped++; continue; }
 
-            auto c = er.centerPoint2f();
-            centers.emplace_back(c.x + x, c.y + y);
+                auto c = er.centerPoint2f();
+                centers.emplace_back(c.x + x, c.y + y);
+            } catch (...) { skipped++; }
         }
+        spdlog::info("[ScanPipeline] detectCenters: components={}, detected={}, skipped={}",
+            n - 1, centers.size(), skipped);
         return centers;
     };
 
     auto centersL = detectCenters(leftGray);
     auto centersR = detectCenters(rightGray);
 
-    if (centersL.size() < 3 || centersR.size() < 3) return output;
+    spdlog::info("[ScanPipeline] L={} R={} calib.valid={}", centersL.size(), centersR.size(), calib_.valid);
+
+    if (centersL.size() < 3 || centersR.size() < 3) {
+        spdlog::warn("[ScanPipeline] 标记点不足 L={} R={}", centersL.size(), centersR.size());
+        return output;
+    }
 
     // 08: marker_match
     auto matchR = markerMatch_->Execute(centersL, centersR);
-    if (!matchR.success || matchR.centerMatches.empty()) return output;
+    if (!matchR.success || matchR.centerMatches.empty()) {
+        spdlog::warn("[ScanPipeline] marker_match 失败 L={} R={}", centersL.size(), centersR.size());
+        return output;
+    }
+    spdlog::info("[ScanPipeline] marker_match OK: {} 对", matchR.centerMatches.size());
 
-    // 11: point_reconstruct
+    // 11: point_reconstruct（需要标定参数）
     if (calib_.valid) {
         pointReconstruct_->SetProjectionMatrices(calib_.P1, calib_.P2, calib_.Q);
 
@@ -427,7 +455,7 @@ void ScanPipeline::notifyProgress(const std::string& status) {
     ScanProgress p;
     p.frameCount = frameCount_;
     p.fusedPointCount = markerFuse_ ? static_cast<int>(markerFuse_->GetFusedPointCount()) : 0;
-    p.status = status;
+    p.status = status + " 标定=" + (calib_.valid ? "有" : "无");
     callback_(p);
 }
 

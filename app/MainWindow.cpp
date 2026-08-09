@@ -793,7 +793,7 @@ void MainWindow::startScanWithConfig(const Scanner::workflow::ScanConfig& config
     if (m_3dView) {
         m_3dView->clearScene();
         m_3dView->setCenterOverlayVisible(true);
-        m_3dView->viewer()->getCamera()->setClearColor(osg::Vec4(0.118f, 0.118f, 0.118f, 1.0f));
+        m_3dView->viewer()->getCamera()->setClearColor(osg::Vec4(0.412f, 0.412f, 0.412f, 1.0f));
         auto* manip = new osgGA::TrackballManipulator();
         m_3dView->setCameraManipulator(manip);
         manip->home(0);
@@ -864,14 +864,26 @@ void MainWindow::startScanWithConfig(const Scanner::workflow::ScanConfig& config
         }
     }
 
-    // 开补光灯 + 激光
+    // 开补光灯（发多种命令确保生效）
     auto* scannerSerial = m_appCtx ? m_appCtx->scannerSerial() : nullptr;
+    spdlog::info("[Scan] scannerSerial={}, isOpen={}",
+        (void*)scannerSerial, scannerSerial && scannerSerial->isOpen());
     if (scannerSerial && scannerSerial->isOpen()) {
+        // 先单独发补光灯命令
+        scannerSerial->send("N14 B60;");
+        QThread::msleep(100);
+        // 再发完整启动命令
         if (config.enableLaser) {
             scannerSerial->send("N10 H50 B60 T1 V2 L60;");
         } else {
             scannerSerial->send("N10 H50 B60 T1 V2 L0;");
         }
+        statusBar()->showMessage(QStringLiteral("补光灯已开(60%) + 扫描中..."));
+        spdlog::info("[Scan] 补光灯命令已发送");
+    } else {
+        statusBar()->showMessage(QStringLiteral("串口未打开，补光灯不可用"));
+        spdlog::warn("[Scan] 串口未打开！scannerSerial={} isOpen={}",
+            (void*)scannerSerial, scannerSerial && scannerSerial->isOpen());
     }
 
     // 启动扫描线程
