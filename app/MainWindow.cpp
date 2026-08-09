@@ -38,6 +38,8 @@
 #include <QStatusBar>
 #include <QSerialPortInfo>
 #include <QSerialPort>
+#include <QTextEdit>
+#include <QDateTime>
 #include <cstdio>
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -176,7 +178,26 @@ MainWindow::MainWindow(AppContext* appCtx, QWidget *parent) : QMainWindow(parent
             m_appCtx->scannerSerial() && m_appCtx->scannerSerial()->isOpen());
     }
 
+    // 调试日志弹窗
+    m_debugLogDlg = new QDialog(this);
+    m_debugLogDlg->setWindowTitle(QStringLiteral("调试日志"));
+    m_debugLogDlg->setMinimumSize(600, 300);
+    m_debugLogDlg->setWindowFlags(Qt::Window);
+    auto* dbgLayout = new QVBoxLayout(m_debugLogDlg);
+    m_debugLogText = new QTextEdit(m_debugLogDlg);
+    m_debugLogText->setReadOnly(true);
+    m_debugLogText->setStyleSheet("QTextEdit { background-color: #1e1e1e; color: #4ec9b0; font-family: Consolas; font-size: 12px; }");
+    dbgLayout->addWidget(m_debugLogText);
+    m_debugLogDlg->show();
+
     startInfoTimer();
+}
+
+void MainWindow::appendDebugLog(const QString& msg) {
+    if (!m_debugLogText) return;
+    QString ts = QDateTime::currentDateTime().toString("hh:mm:ss.zzz");
+    m_debugLogText->append(QStringLiteral("[%1] %2").arg(ts, msg));
+    spdlog::info("[DebugLog] {}", msg.toStdString());
 }
 
 MainWindow::~MainWindow() {
@@ -424,7 +445,7 @@ void MainWindow::onCalibDeviceClicked()
     collectedPoses.reserve(25);
 
     const int totalPoses = 25;
-    const char* laserNames[] = {"左斜激光", "右斜激光", "细节", "深空"};
+    const char* laserNames[] = {"左斜激光", "右斜激光", "细节", "深孔"};
     cv::Size patternSize(calibration::CHESSBOARD_COLS - 1, calibration::CHESSBOARD_ROWS - 1);
 
     bool aborted = false;
@@ -738,17 +759,17 @@ void MainWindow::onScanClicked()
 // ============================================================================
 
 void MainWindow::onScanMarkers() {
-    spdlog::info("[Scan] 标点扫描 (情况A: 纯标记点)");
+    appendDebugLog(QStringLiteral(">>> 点击「标点扫描」"));
     startScanWithConfig(Scanner::workflow::ScanConfig::ModeA(), 2);
 }
 
 void MainWindow::onScanMesh() {
-    spdlog::info("[Scan] 面片扫描 (情况B: 标记点+激光)");
+    appendDebugLog(QStringLiteral(">>> 点击「面片扫描」"));
     startScanWithConfig(Scanner::workflow::ScanConfig::ModeB(), 3);
 }
 
 void MainWindow::onScanPointCloud() {
-    spdlog::info("[Scan] 点云扫描 (情况C: 导入标记点+标记点+激光)");
+    appendDebugLog(QStringLiteral(">>> 点击「点云扫描」"));
     startScanWithConfig(Scanner::workflow::ScanConfig::ModeC(), 4);
 }
 
@@ -866,24 +887,19 @@ void MainWindow::startScanWithConfig(const Scanner::workflow::ScanConfig& config
 
     // 开补光灯（发多种命令确保生效）
     auto* scannerSerial = m_appCtx ? m_appCtx->scannerSerial() : nullptr;
-    spdlog::info("[Scan] scannerSerial={}, isOpen={}",
-        (void*)scannerSerial, scannerSerial && scannerSerial->isOpen());
     if (scannerSerial && scannerSerial->isOpen()) {
+        appendDebugLog(QStringLiteral("串口 %1 已打开").arg(scannerSerial->portName()));
         // 先单独发补光灯命令
         scannerSerial->send("N14 B60;");
+        appendDebugLog(QStringLiteral("串口发送: N14 B60; (补光灯60%)"));
         QThread::msleep(100);
         // 再发完整启动命令
-        if (config.enableLaser) {
-            scannerSerial->send("N10 H50 B60 T1 V2 L60;");
-        } else {
-            scannerSerial->send("N10 H50 B60 T1 V2 L0;");
-        }
-        statusBar()->showMessage(QStringLiteral("补光灯已开(60%) + 扫描中..."));
-        spdlog::info("[Scan] 补光灯命令已发送");
+        QString startCmd = config.enableLaser ?
+            QStringLiteral("N10 H50 B60 T1 V2 L60;") : QStringLiteral("N10 H50 B60 T1 V2 L0;");
+        scannerSerial->send(startCmd);
+        appendDebugLog(QStringLiteral("串口发送: %1 (激光=%2)").arg(startCmd).arg(config.enableLaser ? "开" : "关"));
     } else {
-        statusBar()->showMessage(QStringLiteral("串口未打开，补光灯不可用"));
-        spdlog::warn("[Scan] 串口未打开！scannerSerial={} isOpen={}",
-            (void*)scannerSerial, scannerSerial && scannerSerial->isOpen());
+        appendDebugLog(QStringLiteral("⚠ 串口未打开！补光灯不可用"));
     }
 
     // 启动扫描线程

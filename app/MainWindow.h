@@ -11,6 +11,8 @@
 #include <QStackedWidget>
 #include <QPaintEvent>
 #include <QSvgRenderer>
+#include <QDialog>
+#include <QTextEdit>
 #include <opencv2/core.hpp>
 #include <memory>
 #include <thread>
@@ -133,6 +135,11 @@ protected:
 
     // 系统信息面板
     QTimer *m_infoTimer = nullptr;
+    
+    // 调试日志弹窗
+    QDialog* m_debugLogDlg = nullptr;
+    QTextEdit* m_debugLogText = nullptr;
+    void appendDebugLog(const QString& msg);
     QLabel *m_infoConnLabel = nullptr;
     QLabel *m_infoPointCloudLabel = nullptr;
     QLabel *m_infoFpsLabel = nullptr;
