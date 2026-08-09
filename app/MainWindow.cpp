@@ -1361,14 +1361,10 @@ QWidget *MainWindow::createToolBar()
                         appendDebugLog(QStringLiteral("导入全局标志点 %1 个: %2").arg(markers.size()).arg(path));
                         statusBar()->showMessage(QStringLiteral("已导入 %1 个全局标志点，可进行点云扫描").arg(markers.size()));
 
-                        // 在3D视图显示导入的标志点
+                        // 在3D视图叠加显示导入的标志点（不清空已有场景）
                         if (m_3dView && !markers.empty()) {
-                            m_3dView->clearScene();
                             m_3dView->loadMarkerPoints(markers);
-                            m_3dView->setCenterOverlayVisible(true);
-                            auto* manip = new osgGA::TrackballManipulator();
-                            m_3dView->setCameraManipulator(manip);
-                            manip->home(0);
+                            m_3dView->autoFitCamera();
                         }
 
                         QMessageBox::information(this, QStringLiteral("导入成功"),
