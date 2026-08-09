@@ -250,9 +250,9 @@ static osg::Geode* loadStlManual(const std::string& path)
     lightModel->setTwoSided(true);  // 双面光照：翻转绕序后内表面法线朝里，需要twoSided才亮
     ss->setAttributeAndModes(lightModel.get());
     osg::ref_ptr<osg::Material> mat = new osg::Material;
-    mat->setDiffuse(osg::Material::FRONT_AND_BACK, osg::Vec4(0.75f, 0.75f, 0.75f, 0.3f));
-    mat->setAmbient(osg::Material::FRONT_AND_BACK, osg::Vec4(0.75f, 0.75f, 0.75f, 0.3f));
-    mat->setSpecular(osg::Material::FRONT_AND_BACK, osg::Vec4(0.3f, 0.3f, 0.3f, 0.3f));
+    mat->setDiffuse(osg::Material::FRONT_AND_BACK, osg::Vec4(0.75f, 0.75f, 0.75f, 0.5f));
+    mat->setAmbient(osg::Material::FRONT_AND_BACK, osg::Vec4(0.75f, 0.75f, 0.75f, 0.5f));
+    mat->setSpecular(osg::Material::FRONT_AND_BACK, osg::Vec4(0.3f, 0.3f, 0.3f, 0.5f));
     mat->setShininess(osg::Material::FRONT_AND_BACK, 100.0f);
     ss->setAttributeAndModes(mat.get(), osg::StateAttribute::ON);
     ss->setMode(GL_BLEND, osg::StateAttribute::ON);
