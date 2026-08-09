@@ -862,6 +862,18 @@ void MainWindow::startScanWithConfig(const Scanner::workflow::ScanConfig& config
         return;
     }
 
+    // 先发串口命令（补光灯+激光），再启动相机采集，避免相机先拍黑帧
+    auto* scannerSerial = m_appCtx ? m_appCtx->scannerSerial() : nullptr;
+    if (scannerSerial && scannerSerial->isOpen()) {
+        appendDebugLog(QStringLiteral("串口 %1 已打开").arg(scannerSerial->portName()));
+        QString startCmd = config.enableLaser ?
+            QStringLiteral("N10 H50 B60 T1 V2 L60;") : QStringLiteral("N10 H50 B60 T1 V2 L0;");
+        scannerSerial->send(startCmd);
+        appendDebugLog(QStringLiteral("串口发送: %1 (激光=%2)").arg(startCmd).arg(config.enableLaser ? "开" : "关"));
+    } else {
+        appendDebugLog(QStringLiteral("⚠ 串口未打开！补光灯不可用"));
+    }
+
     // 确保相机在连续采集模式
     if (!cam->isCapturing()) {
         statusBar()->showMessage(QStringLiteral("启动相机连续采集..."));
@@ -875,31 +887,12 @@ void MainWindow::startScanWithConfig(const Scanner::workflow::ScanConfig& config
                     QStringLiteral("相机采集启动失败: %1").arg(QString::fromStdString(r.message)));
                 return;
             }
-            // 等回调产帧
-            QThread::msleep(500);
         } catch (const std::exception& e) {
             spdlog::error("[Scan] 相机启动异常: {}", e.what());
             QMessageBox::warning(this, QStringLiteral("扫描"),
                 QStringLiteral("相机启动异常: %1").arg(QString::fromUtf8(e.what())));
             return;
         }
-    }
-
-    // 开补光灯（发多种命令确保生效）
-    auto* scannerSerial = m_appCtx ? m_appCtx->scannerSerial() : nullptr;
-    if (scannerSerial && scannerSerial->isOpen()) {
-        appendDebugLog(QStringLiteral("串口 %1 已打开").arg(scannerSerial->portName()));
-        // 先单独发补光灯命令
-        scannerSerial->send("N14 B60;");
-        appendDebugLog(QStringLiteral("串口发送: N14 B60; (补光灯60%)"));
-        QThread::msleep(100);
-        // 再发完整启动命令
-        QString startCmd = config.enableLaser ?
-            QStringLiteral("N10 H50 B60 T1 V2 L60;") : QStringLiteral("N10 H50 B60 T1 V2 L0;");
-        scannerSerial->send(startCmd);
-        appendDebugLog(QStringLiteral("串口发送: %1 (激光=%2)").arg(startCmd).arg(config.enableLaser ? "开" : "关"));
-    } else {
-        appendDebugLog(QStringLiteral("⚠ 串口未打开！补光灯不可用"));
     }
 
     // 启动扫描线程

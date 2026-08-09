@@ -511,9 +511,127 @@ ScanFrameOutput ScanPipeline::processLaserBranch(
 
     ScanFrameOutput output;
 
-    // TODO: 激光链 CUDA 算子接入（steger→undistort→epipolar→match→reconstruct）
-    // 当前留空，待标记点链跑通后逐个接入
-    spdlog::debug("[ScanPipeline] 激光链待接入 (frame={})", frameCount_);
+    if (!steger_ || !undistortCuda_ || !epipolarInterp_ || !laserMatch_ || !laserReconstruct_) {
+        spdlog::warn("[ScanPipeline] 激光链算子未初始化");
+        return output;
+    }
+
+    try {
+        // 上传到 GPU
+        cv::cuda::GpuMat d_leftGray(leftGray), d_rightGray(rightGray);
+        cv::cuda::GpuMat d_laserMaskL(laserMaskL), d_laserMaskR(laserMaskR);
+
+        // ===== 04: steger — 激光中心亚像素提取 (Flat模式) =====
+        auto stegerL = steger_->Execute(d_leftGray, d_laserMaskL, cudaStream_);
+        auto stegerR = steger_->Execute(d_rightGray, d_laserMaskR, cudaStream_);
+        if (!stegerL.success || !stegerR.success ||
+            !stegerL.d_centerPoints || !stegerR.d_centerPoints) {
+            spdlog::warn("[ScanPipeline] steger 失败 L={} R={}", stegerL.success, stegerR.success);
+            return output;
+        }
+        spdlog::info("[ScanPipeline] steger OK: L={} R={} pts",
+            stegerL.d_centerPoints->cols, stegerR.d_centerPoints->cols);
+
+        // ===== 05: undistort_cuda — 去畸变矫正 =====
+        // 设置左相机参数
+        if (calib_.valid) {
+            calib::UndistortPointsParams paramsL;
+            paramsL.cameraMatrix = calib_.cameraMatrixL;
+            paramsL.distCoeffs = calib_.distCoeffsL;
+            paramsL.R = calib_.R1;
+            paramsL.P = calib_.P1;
+            undistortCuda_->SetParams(paramsL);
+        }
+        auto undistL = undistortCuda_->Execute(
+            *stegerL.d_centerPoints,
+            stegerL.d_line_ids ? *stegerL.d_line_ids : cv::cuda::GpuMat(),
+            cudaStream_);
+        if (!undistL.success || !undistL.d_rectifiedPoints) {
+            spdlog::warn("[ScanPipeline] undistort L 失败");
+            return output;
+        }
+
+        // 设置右相机参数
+        if (calib_.valid) {
+            calib::UndistortPointsParams paramsR;
+            paramsR.cameraMatrix = calib_.cameraMatrixR;
+            paramsR.distCoeffs = calib_.distCoeffsR;
+            paramsR.R = calib_.R2;
+            paramsR.P = calib_.P2;
+            undistortCuda_->SetParams(paramsR);
+        }
+        auto undistR = undistortCuda_->Execute(
+            *stegerR.d_centerPoints,
+            stegerR.d_line_ids ? *stegerR.d_line_ids : cv::cuda::GpuMat(),
+            cudaStream_);
+        if (!undistR.success || !undistR.d_rectifiedPoints) {
+            spdlog::warn("[ScanPipeline] undistort R 失败");
+            return output;
+        }
+        spdlog::info("[ScanPipeline] undistort OK");
+
+        // ===== 06: epipolar_interp — 极线插值 =====
+        auto epipolarL = epipolarInterp_->Execute(
+            *undistL.d_rectifiedPoints,
+            undistL.d_line_ids ? *undistL.d_line_ids : cv::cuda::GpuMat(),
+            cudaStream_);
+        auto epipolarR = epipolarInterp_->Execute(
+            *undistR.d_rectifiedPoints,
+            undistR.d_line_ids ? *undistR.d_line_ids : cv::cuda::GpuMat(),
+            cudaStream_);
+        if (!epipolarL.success || !epipolarR.success) {
+            spdlog::warn("[ScanPipeline] epipolar_interp 失败");
+            return output;
+        }
+        spdlog::info("[ScanPipeline] epipolar_interp OK");
+
+        // ===== 07: laser_match_scan — 线匹配 =====
+        auto matchR = laserMatch_->Execute(
+            *epipolarL.d_interpPoints,
+            epipolarL.d_interp_line_ids ? *epipolarL.d_interp_line_ids : cv::cuda::GpuMat(),
+            *epipolarR.d_interpPoints,
+            epipolarR.d_interp_line_ids ? *epipolarR.d_interp_line_ids : cv::cuda::GpuMat(),
+            cudaStream_);
+        if (!matchR.success || !matchR.d_matched_left || !matchR.d_matched_right) {
+            spdlog::warn("[ScanPipeline] laser_match_scan 失败");
+            return output;
+        }
+        spdlog::info("[ScanPipeline] laser_match OK: {} pairs", matchR.d_matched_left->cols);
+
+        // ===== 08: laser_reconstruct — 三维重建 =====
+        cv::Mat Q = calib_.valid ? calib_.Q : cv::Mat();
+        if (Q.empty()) {
+            spdlog::warn("[ScanPipeline] 无Q矩阵，跳过激光重建");
+            return output;
+        }
+
+        auto reconR = laserReconstruct_->Execute(
+            *matchR.d_matched_left,
+            *matchR.d_matched_right,
+            matchR.d_matched_line_ids ? *matchR.d_matched_line_ids : cv::cuda::GpuMat(),
+            Q, cudaStream_);
+        if (!reconR.success || !reconR.d_points3d) {
+            spdlog::warn("[ScanPipeline] laser_reconstruct 失败");
+            return output;
+        }
+
+        // 下载 3D 点到 CPU
+        cudaStream_.waitForCompletion();
+        cv::Mat points3d;
+        reconR.d_points3d->download(points3d, cudaStream_);
+        cudaStream_.waitForCompletion();
+
+        if (!points3d.empty() && points3d.type() == CV_32FC3) {
+            cv::Point3f* ptr = points3d.ptr<cv::Point3f>();
+            output.laserPoints3d.assign(ptr, ptr + points3d.total());
+            spdlog::info("[ScanPipeline] laser 3D: {} points", output.laserPoints3d.size());
+        }
+
+    } catch (const std::exception& e) {
+        spdlog::warn("[ScanPipeline] 激光链异常: {}", e.what());
+    } catch (...) {
+        spdlog::warn("[ScanPipeline] 激光链未知异常");
+    }
 
     return output;
 }
