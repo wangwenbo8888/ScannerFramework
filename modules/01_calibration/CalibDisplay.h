@@ -3,6 +3,8 @@
 #include <osg/Group>
 #include <string>
 #include <QWidget>
+#include <QImage>
+#include <opencv2/core.hpp>
 
 namespace calib_display {
 
@@ -14,6 +16,18 @@ public:
     explicit CalibBoard2D(QWidget* parent = nullptr);
 protected:
     void paintEvent(QPaintEvent*) override;
+};
+
+// 相机预览弹窗
+class CameraPreviewDialog : public QWidget {
+public:
+    explicit CameraPreviewDialog(QWidget* parent = nullptr);
+    void updateFrames(const cv::Mat& left, const cv::Mat& right, const QString& status);
+protected:
+    void paintEvent(QPaintEvent*) override;
+private:
+    QImage m_leftImg, m_rightImg;
+    QString m_statusText;
 };
 
 } // namespace calib_display

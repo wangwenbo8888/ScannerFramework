@@ -11,12 +11,15 @@
 #include "stubs/CameraControl.h"
 #include "stubs/scan_workflow.h"
 #include "MCUDriver.h"
+#include "ScannerSerialPort.h"
 #include "file_io.h"
+#include <spdlog/spdlog.h>
 #include <osg/Vec3>
 #include <osg/Matrix>
 #include <osgGA/TrackballManipulator>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/calib3d.hpp>
+#include <opencv2/imgcodecs.hpp>
 #include <QPainter>
 #include <QPainterPath>
 #include <QApplication>
@@ -27,11 +30,13 @@
 #include <QThread>
 #include <QScrollArea>
 #include <QShortcut>
+#include <QProgressDialog>
 #include <QMessageBox>
 #include <QMenu>
 #include <QFileDialog>
 #include <QStatusBar>
-#include <QProgressDialog>
+#include <QSerialPortInfo>
+#include <QSerialPort>
 #include <cstdio>
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -156,6 +161,19 @@ MainWindow::MainWindow(AppContext* appCtx, QWidget *parent) : QMainWindow(parent
 
     m_integrateTestDialog = nullptr;
     m_calibDialog = nullptr;
+
+    // 显示设备连接状态
+    if (m_appCtx) {
+        QStringList statusParts;
+        statusParts << QStringLiteral("相机: %1").arg(m_appCtx->cameraReady() ? "已连接" : "未连接");
+        statusParts << QStringLiteral("串口: %1").arg(
+            m_appCtx->scannerSerial() && m_appCtx->scannerSerial()->isOpen() ?
+            m_appCtx->scannerSerial()->portName() : "未连接");
+        statusBar()->showMessage(statusParts.join("  |  "));
+        spdlog::info("[MainWindow] 设备状态: camera={} serial={}",
+            m_appCtx->cameraReady(),
+            m_appCtx->scannerSerial() && m_appCtx->scannerSerial()->isOpen());
+    }
 
     startInfoTimer();
 }
@@ -289,37 +307,113 @@ void MainWindow::onCalibDeviceClicked()
     }
 
     auto* cam = m_appCtx ? m_appCtx->camera() : nullptr;
-    if (!cam) {
-        QMessageBox::warning(this, QStringLiteral("标定"), QStringLiteral("相机模块未初始化"));
+    auto* scannerSerial = m_appCtx ? m_appCtx->scannerSerial() : nullptr;
+
+    // 诊断：显示设备连接状态
+    QString diag;
+    diag += QStringLiteral("相机: %1\n").arg(cam && cam->isOpen() ? "已连接" : "未连接");
+    diag += QStringLiteral("串口: %1\n").arg(
+        scannerSerial && scannerSerial->isOpen() ? scannerSerial->portName() : "未连接");
+    spdlog::info("calib diag: camera_open={} serial_open={}",
+        cam && cam->isOpen(), scannerSerial && scannerSerial->isOpen());
+    statusBar()->showMessage(diag.replace("\n", " | "));
+    QApplication::processEvents();
+
+    if (!cam || !cam->isOpen()) {
+        QMessageBox::warning(this, QStringLiteral("标定"), QStringLiteral("相机未连接，请检查设备"));
         return;
     }
 
-    // 自动开相机
-    if (!cam->isOpen()) {
-        statusBar()->showMessage(QStringLiteral("正在打开相机..."));
+    // 确保异步采集正在运行（连续模式）
+    if (!cam->isCapturing()) {
+        statusBar()->showMessage(QStringLiteral("正在启动相机采集..."));
         QApplication::processEvents();
-        auto r = cam->open();
+        // 提高曝光（50ms），避免画面太暗
+        cam->setExposure(50.0);
+        auto r = cam->startAsyncCaptureContinuous([](const Scanner::hal::StereoFrame&) {});
+        spdlog::info("calib: startAsyncCaptureContinuous success={} msg={}", r.success, r.message);
         if (!r.success) {
             QMessageBox::warning(this, QStringLiteral("标定"),
-                QStringLiteral("相机打开失败: %1").arg(QString::fromStdString(r.message)));
+                QStringLiteral("相机采集启动失败: %1").arg(QString::fromStdString(r.message)));
             return;
         }
     }
-    if (!cam->isCapturing()) {
-        statusBar()->showMessage(QStringLiteral("正在启动采集..."));
-        QApplication::processEvents();
-        cam->startCapture();
+
+    // 测试抓一帧
+    statusBar()->showMessage(QStringLiteral("测试相机采集..."));
+    QApplication::processEvents();
+    QThread::msleep(500); // 等回调产帧
+    {
+        Scanner::hal::StereoFrame testFrame;
+        auto r = cam->grabFrame(testFrame, 5000);
+        spdlog::info("calib: test grab success={} leftEmpty={} rightEmpty={} msg={}",
+                     r.success, testFrame.leftGray.empty(), testFrame.rightGray.empty(), r.message);
+        if (!r.success || testFrame.leftGray.empty()) {
+            QMessageBox::warning(this, QStringLiteral("标定"),
+                QStringLiteral("相机采集测试失败: %1\n请检查相机连接").arg(QString::fromStdString(r.message)));
+            return;
+        }
+        // 保存测试帧
+        cv::imwrite("calib_test_left.png", testFrame.leftGray);
+        cv::imwrite("calib_test_right.png", testFrame.rightGray);
+        spdlog::info("calib: test frames saved, size={}x{}", testFrame.leftGray.cols, testFrame.leftGray.rows);
     }
 
-    statusBar()->showMessage(QStringLiteral("标定开始：请移动设备采集25个姿态..."));
-    QApplication::processEvents();
+    // ===== 进度对话框 =====
+    QProgressDialog progress(QStringLiteral("准备标定..."), QStringLiteral("取消"),
+                             0, 25, this);
+    progress.setWindowTitle(QStringLiteral("一键标定"));
+    progress.setWindowModality(Qt::NonModal);
+    progress.setMinimumDuration(0);
+    progress.setMinimumWidth(500);
+    progress.move(100, 100);
+    progress.show();
+    progress.activateWindow();
+    progress.raise();
 
-    auto* mcu = m_appCtx ? m_appCtx->mcu() : nullptr;
+    // ===== 相机预览弹窗（放在屏幕右侧，不挡进度对话框）=====
+    calib_display::CameraPreviewDialog previewDlg(this);
+    previewDlg.setWindowTitle(QStringLiteral("相机预览"));
+    previewDlg.resize(700, 350);
+    previewDlg.move(650, 100);
+    previewDlg.show();
+
+    auto updatePreview = [&](const cv::Mat& left, const cv::Mat& right, const QString& status) {
+        if (!left.empty()) previewDlg.updateFrames(left, right, status);
+        progress.setLabelText(status);
+        statusBar()->showMessage(status);
+        QApplication::processEvents();
+    };
+
+    auto showCalibError = [&](const QString& msg) {
+        spdlog::error("calib error: {}", msg.toStdString());
+        statusBar()->showMessage(QStringLiteral("错误: %1").arg(msg));
+        previewDlg.lower();
+        QMessageBox::critical(&previewDlg, QStringLiteral("标定错误"), msg);
+    };
+
+    // 使用已初始化的串口发送命令
+    auto sendMcu = [&](const QString& cmd) -> bool {
+        if (!scannerSerial || !scannerSerial->isOpen()) return false;
+        return scannerSerial->send(cmd);
+    };
+
+    // 开补光灯（N10 启动命令：补光60，激光关）+ N14 单独补光
+    if (scannerSerial && scannerSerial->isOpen()) {
+        sendMcu("N14 B60;");
+        QThread::msleep(200);
+        sendMcu("N10 H50 B60 T1 V2 L0;");
+        QThread::msleep(300);
+        statusBar()->showMessage(QStringLiteral("补光灯已开 N14 B60 + N10 启动"));
+    } else {
+        statusBar()->showMessage(QStringLiteral("串口未打开，补光灯不可用"));
+    }
+    QApplication::processEvents();
 
     // ===== 逐姿态采集（25个姿态 × 每姿态5帧）=====
     struct CollectedPose {
-        cv::Mat markerL, markerR;           // 标志点帧
-        cv::Mat laserL[4], laserR[4];       // 4种激光管帧（左斜/右斜/细节/深空）
+        cv::Mat markerL, markerR;
+        cv::Mat laserL[4], laserR[4];
         double temperature = 25.0;
     };
     std::vector<CollectedPose> collectedPoses;
@@ -327,95 +421,94 @@ void MainWindow::onCalibDeviceClicked()
 
     const int totalPoses = 25;
     const char* laserNames[] = {"左斜激光", "右斜激光", "细节", "深空"};
+    cv::Size patternSize(calibration::CHESSBOARD_COLS - 1, calibration::CHESSBOARD_ROWS - 1);
+
+    bool aborted = false;
 
     for (int poseIdx = 0; poseIdx < totalPoses; ++poseIdx) {
-        // 显示当前目标姿态
-        statusBar()->showMessage(QStringLiteral("姿态 %1/%2：请将设备移动到目标姿态...")
-            .arg(poseIdx + 1).arg(totalPoses));
-        QApplication::processEvents();
+        progress.setValue(poseIdx);
 
-        // 等待姿态匹配（持续采帧 + 棋盘格检测）
-        bool poseMatched = false;
-        int waitFrameCount = 0;
-        int consecutiveMatch = 0;
-        cv::Size patternSize(calibration::CHESSBOARD_COLS, calibration::CHESSBOARD_ROWS);
+        // 等待用户准备好（显示实时画面，按"继续"采集）
+        updatePreview({}, {},
+            QStringLiteral("姿态 %1/%2：请将标定板放到目标位置，准备就绪后等待自动采集...")
+                .arg(poseIdx + 1).arg(totalPoses));
 
-        while (!poseMatched) {
+        // 倒计时3秒后自动采集
+        for (int cd = 3; cd > 0; --cd) {
+            if (progress.wasCanceled()) { aborted = true; break; }
             QApplication::processEvents();
+
             Scanner::hal::StereoFrame sf;
-            if (!cam->grabFrame(sf, 3000).success || sf.leftGray.empty()) {
-                waitFrameCount++;
-                if (waitFrameCount > 100) break;  // 超时保护
-                continue;
+            if (cam->grabFrame(sf, 2000).success && !sf.leftGray.empty()) {
+                updatePreview(sf.leftGray, sf.rightGray,
+                    QStringLiteral("姿态 %1/%2：%3 秒后开始采集...")
+                        .arg(poseIdx + 1).arg(totalPoses).arg(cd));
             }
-
-            // 检测棋盘格角点确认姿态（简化：连续3帧检测到棋盘格=姿态稳定）
-            std::vector<cv::Point2f> cornersL, cornersR;
-            bool foundL = cv::findChessboardCorners(sf.leftGray, patternSize, cornersL,
-                cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE);
-            bool foundR = cv::findChessboardCorners(sf.rightGray, patternSize, cornersR,
-                cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE);
-
-            if (foundL && foundR) {
-                consecutiveMatch++;
-                statusBar()->showMessage(QStringLiteral("姿态 %1/%2：检测到棋盘格 (%3/3)...")
-                    .arg(poseIdx + 1).arg(totalPoses).arg(consecutiveMatch));
-                QApplication::processEvents();
-                if (consecutiveMatch >= 3) {
-                    poseMatched = true;
-                }
-            } else {
-                consecutiveMatch = 0;
-            }
-            waitFrameCount++;
+            QThread::msleep(1000);
         }
+        if (aborted) break;
 
-        if (!poseMatched) {
-            auto ret = QMessageBox::question(this, QStringLiteral("姿态采集"),
-                QStringLiteral("姿态 %1 未检测到棋盘格，跳过此姿态？").arg(poseIdx + 1),
-                QMessageBox::Yes | QMessageBox::Abort);
-            if (ret == QMessageBox::Abort) break;
-            continue;
-        }
-
-        // ===== 姿态匹配，采集5帧 =====
+        // ===== 直接采集5帧 =====
         CollectedPose cp;
         cp.temperature = cam->getTemperature();
 
-        // 帧1：标志点（补光灯ON，激光OFF）
-        statusBar()->showMessage(QStringLiteral("姿态 %1：采集标志点帧...").arg(poseIdx + 1));
-        QApplication::processEvents();
-        if (mcu) { mcu->setLedOn(true); mcu->setLaserOn(false); }
-        QThread::msleep(100);
+        // 帧1：标志点帧（补光灯开，激光关）
+        updatePreview({}, {},
+            QStringLiteral("姿态 %1/%2 - 帧 1/5：标志点...").arg(poseIdx + 1).arg(totalPoses));
+        sendMcu("N14 B60;");
+        sendMcu("N13 L0;");
+        QThread::msleep(150);
         {
             Scanner::hal::StereoFrame sf;
             if (cam->grabFrame(sf, 5000).success) {
                 cp.markerL = sf.leftGray.clone();
                 cp.markerR = sf.rightGray.clone();
+                updatePreview(sf.leftGray, sf.rightGray,
+                    QStringLiteral("姿态 %1 - 帧 1/5 标志点 OK").arg(poseIdx + 1));
             }
+            QThread::msleep(300);
         }
 
-        // 帧2-5：4种激光管（补光灯OFF，对应激光管ON）
+        // 帧2-5：4种激光帧
         for (int laserIdx = 0; laserIdx < 4; ++laserIdx) {
-            statusBar()->showMessage(QStringLiteral("姿态 %1：采集%2帧...")
-                .arg(poseIdx + 1).arg(QString::fromUtf8(laserNames[laserIdx])));
-            QApplication::processEvents();
-            if (mcu) { mcu->setLedOn(false); mcu->setLaserOn(true); mcu->setLaserPower(60 + laserIdx * 20); }
-            QThread::msleep(100);
+            if (progress.wasCanceled()) { aborted = true; break; }
+            updatePreview({}, {},
+                QStringLiteral("姿态 %1/%2 - 帧 %3/5：%4...")
+                    .arg(poseIdx + 1).arg(totalPoses).arg(laserIdx + 2)
+                    .arg(QString::fromUtf8(laserNames[laserIdx])));
+            sendMcu("N14 B0;");
+            sendMcu(QString("N13 L%1;").arg(60 + laserIdx * 20));
+            QThread::msleep(150);
             Scanner::hal::StereoFrame sf;
             if (cam->grabFrame(sf, 5000).success) {
                 cp.laserL[laserIdx] = sf.leftGray.clone();
                 cp.laserR[laserIdx] = sf.rightGray.clone();
+                updatePreview(sf.leftGray, sf.rightGray,
+                    QStringLiteral("姿态 %1 - 帧 %2/5 %3 OK")
+                        .arg(poseIdx + 1).arg(laserIdx + 2).arg(QString::fromUtf8(laserNames[laserIdx])));
             }
+            QThread::msleep(300);
         }
+        if (aborted) break;
 
-        // 恢复硬件状态
-        if (mcu) { mcu->setLaserOn(false); mcu->setLedOn(false); }
-
+        // 恢复补光灯
+        sendMcu("N14 B60;");
+        sendMcu("N13 L0;");
         collectedPoses.push_back(std::move(cp));
-        statusBar()->showMessage(QStringLiteral("姿态 %1/%2 采集完成（%3 帧激光）")
-            .arg(poseIdx + 1).arg(totalPoses).arg(4));
-        QApplication::processEvents();
+
+        updatePreview({}, {},
+            QStringLiteral("姿态 %1/%2 完成！5帧已采集，请移动到下一姿态...")
+                .arg(poseIdx + 1).arg(totalPoses));
+        QThread::msleep(1000);
+    }
+
+    progress.setValue(25);
+    previewDlg.close();
+    if (scannerSerial) { sendMcu("N11 H0;"); }
+
+    if (aborted) {
+        cam->stopCapture();
+        return;
     }
 
     // 停止采集
@@ -440,11 +533,11 @@ void MainWindow::onCalibDeviceClicked()
     camInput.tempRangeMin = -10.0;
     camInput.tempRangeMax = 10.0;
 
-    cv::Size patternSize(calibration::CHESSBOARD_COLS, calibration::CHESSBOARD_ROWS);
+    cv::Size cbPatternSize(calibration::CHESSBOARD_COLS - 1, calibration::CHESSBOARD_ROWS - 1);
     for (const auto& cp : collectedPoses) {
         if (cp.markerL.empty()) continue;
         std::vector<cv::Point2f> cornersL, cornersR;
-        if (cv::findChessboardCorners(cp.markerL, patternSize, cornersL,
+        if (cv::findChessboardCorners(cp.markerL, cbPatternSize, cornersL,
             cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE) &&
             cv::findChessboardCorners(cp.markerR, patternSize, cornersR,
             cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE))

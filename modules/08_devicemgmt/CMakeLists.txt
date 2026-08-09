@@ -6,6 +6,7 @@ add_library(mod_devicemgmt STATIC
     CameraControl.cpp
     MCUDriver.cpp
     HardwareMonitor.cpp
+    ScannerSerialPort.cpp
 )
 
 target_include_directories(mod_devicemgmt
@@ -25,6 +26,7 @@ target_link_libraries(mod_devicemgmt
         fw_common
         ${OpenCV_LIBS}
         spdlog::spdlog
+        Qt5::SerialPort
     PRIVATE
         "${GALAXY_SDK_DIR}/lib/x64/GxIAPICPPEx.lib"
 )

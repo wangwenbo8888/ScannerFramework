@@ -15,6 +15,7 @@
 #include "modules/08_devicemgmt/CameraControl.h"
 #include "modules/08_devicemgmt/MCUDriver.h"
 #include "modules/08_devicemgmt/HardwareMonitor.h"
+#include "modules/08_devicemgmt/ScannerSerialPort.h"
 #include "workflow/WorkflowContext.h"
 #include "ScanWorkflow.h"
 #include "CalibrationWorkflow.h"
@@ -51,12 +52,39 @@ void AppContext::initialize() {
     camCfg.rotateRight180 = true;
     camera_ = std::make_unique<Scanner::device::CameraControl>(camCfg);
     mcu_    = std::make_unique<Scanner::device::MCUDriver>(115200);
+    scannerSerial_ = std::make_unique<Scanner::device::ScannerSerialPort>();
 
     hwMonitor_ = std::make_unique<Scanner::device::HardwareMonitor>();
     hwMonitor_->setDeviceStateCache(deviceStateCache_.get());
     hwMonitor_->setEventBus(eventBus_.get());
     hwMonitor_->setMCU(mcu_.get());
     hwMonitor_->setCamera(camera_.get());
+
+    // === 启动时自动检测并初始化设备 ===
+
+    // 1) 检测串口，打开第一个可用串口（下位机 MCU）
+    auto ports = Scanner::device::ScannerSerialPort::availablePorts();
+    spdlog::info("[AppContext] 检测到串口: {}", ports.join(", ").toStdString());
+    for (const auto& portName : ports) {
+        if (scannerSerial_->open(portName)) {
+            serialReady_ = true;
+            spdlog::info("[AppContext] 下位机串口 {} 已连接", portName.toStdString());
+            break;
+        }
+    }
+    if (!serialReady_) {
+        spdlog::warn("[AppContext] 未找到可用串口，下位机控制不可用");
+    }
+
+    // 2) 检测相机，尝试打开
+    auto camResult = camera_->open();
+    if (camResult.success) {
+        cameraReady_ = true;
+        spdlog::info("[AppContext] 相机已连接: {}", camResult.message);
+    } else {
+        cameraReady_ = false;
+        spdlog::warn("[AppContext] 相机连接失败: {}", camResult.message);
+    }
 
     // === WorkflowContext 装配 ===
     wfCtx_ = std::make_unique<Scanner::workflow::WorkflowContext>();
@@ -90,6 +118,7 @@ void AppContext::shutdown() {
     if (postWf_)    postWf_->stop();
     if (faultHandler_) faultHandler_->stop();
     if (camera_)    { camera_->stopAsyncCapture(); camera_->close(); }
+    if (scannerSerial_) scannerSerial_->close();
     if (mcu_)       mcu_->close();
     spdlog::info("[AppContext] 全部组件已关闭");
 }

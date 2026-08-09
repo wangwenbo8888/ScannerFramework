@@ -472,4 +472,67 @@ void CalibBoard2D::paintEvent(QPaintEvent*)
     p.drawRect(boardX, boardY, boardW, boardH);
 }
 
+// ============================================================================
+// CameraPreviewDialog — 相机预览弹窗
+// ============================================================================
+CameraPreviewDialog::CameraPreviewDialog(QWidget* parent) : QWidget(parent, Qt::Window)
+{
+    setWindowTitle(QStringLiteral("相机预览"));
+    setMinimumSize(800, 400);
+    setAttribute(Qt::WA_DeleteOnClose, false);
+    setStyleSheet("background-color: black;");
+}
+
+void CameraPreviewDialog::updateFrames(const cv::Mat& left, const cv::Mat& right, const QString& status)
+{
+    if (!left.empty()) {
+        QImage qimg(left.data, left.cols, left.rows, static_cast<int>(left.step), QImage::Format_Grayscale8);
+        m_leftImg = qimg.copy();
+    }
+    if (!right.empty()) {
+        QImage qimg(right.data, right.cols, right.rows, static_cast<int>(right.step), QImage::Format_Grayscale8);
+        m_rightImg = qimg.copy();
+    }
+    m_statusText = status;
+    update();
+}
+
+void CameraPreviewDialog::paintEvent(QPaintEvent*)
+{
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+
+    int w = width();
+    int h = height();
+    int halfW = w / 2;
+    int statusH = 28;
+
+    p.fillRect(rect(), Qt::black);
+
+    auto drawImg = [&](const QImage& img, int xOffset, const QString& label, const QColor& labelColor) {
+        if (img.isNull()) {
+            p.setPen(QPen(QColor(80, 80, 80)));
+            p.drawText(QRect(xOffset, statusH, halfW, h - statusH), Qt::AlignCenter, label + "\n等待画面...");
+            return;
+        }
+        QImage scaled = img.scaled(halfW - 6, h - statusH - 6, Qt::KeepAspectRatio, Qt::FastTransformation);
+        int dx = xOffset + (halfW - scaled.width()) / 2;
+        int dy = statusH + (h - statusH - scaled.height()) / 2;
+        p.drawImage(dx, dy, scaled);
+    };
+
+    drawImg(m_leftImg, 0, "LEFT", QColor("#0066FF"));
+    drawImg(m_rightImg, halfW, "RIGHT", QColor("#FF0000"));
+
+    // 分隔线
+    p.setPen(QPen(QColor(50, 50, 50), 1));
+    p.drawLine(halfW, 0, halfW, h);
+
+    // 状态栏
+    p.fillRect(0, 0, w, statusH, QColor(0, 0, 0, 200));
+    p.setPen(QPen(QColor(0, 255, 0)));
+    p.setFont(QFont("Arial", 9));
+    p.drawText(QRect(6, 0, w - 12, statusH), Qt::AlignLeft | Qt::AlignVCenter, m_statusText);
+}
+
 } // namespace calib_display

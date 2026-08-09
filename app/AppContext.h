@@ -13,7 +13,7 @@
 namespace Scanner::data    { class FrameBuffer; class PointCloudBuffer; class DeviceStateCache; class CalibStore; }
 namespace Scanner::service { class StateMachine; class ParameterManager; class FaultHandler; class SessionService; }
 namespace Scanner::infra   { class EventBus; }
-namespace Scanner::device  { class CameraControl; class MCUDriver; class HardwareMonitor; }
+namespace Scanner::device  { class CameraControl; class MCUDriver; class HardwareMonitor; class ScannerSerialPort; }
 namespace Scanner::workflow{ class WorkflowContext; class ScanWorkflow; class CalibrationWorkflow; class PostProcessWorkflow; }
 
 class AppContext {
@@ -38,9 +38,14 @@ public:
     Scanner::service::SessionService*  sessionService()  { return sessionService_.get(); }
 
     // HAL 层
-    Scanner::device::CameraControl*   camera()    { return camera_.get(); }
-    Scanner::device::MCUDriver*       mcu()       { return mcu_.get(); }
-    Scanner::device::HardwareMonitor* hwMonitor() { return hwMonitor_.get(); }
+    Scanner::device::CameraControl*    camera()    { return camera_.get(); }
+    Scanner::device::MCUDriver*        mcu()       { return mcu_.get(); }
+    Scanner::device::HardwareMonitor*  hwMonitor() { return hwMonitor_.get(); }
+    Scanner::device::ScannerSerialPort* scannerSerial() { return scannerSerial_.get(); }
+
+    // 设备连接状态
+    bool cameraReady() const { return cameraReady_; }
+    bool serialReady() const { return serialReady_; }
 
     // Infra
     Scanner::infra::EventBus* eventBus() { return eventBus_.get(); }
@@ -68,9 +73,14 @@ private:
     std::unique_ptr<Scanner::infra::EventBus> eventBus_;
 
     // HAL
-    std::unique_ptr<Scanner::device::CameraControl>   camera_;
-    std::unique_ptr<Scanner::device::MCUDriver>       mcu_;
-    std::unique_ptr<Scanner::device::HardwareMonitor> hwMonitor_;
+    std::unique_ptr<Scanner::device::CameraControl>    camera_;
+    std::unique_ptr<Scanner::device::MCUDriver>        mcu_;
+    std::unique_ptr<Scanner::device::HardwareMonitor>  hwMonitor_;
+    std::unique_ptr<Scanner::device::ScannerSerialPort> scannerSerial_;
+
+    // 设备连接状态
+    bool cameraReady_ = false;
+    bool serialReady_ = false;
 
     // Workflow
     std::unique_ptr<Scanner::workflow::WorkflowContext>     wfCtx_;

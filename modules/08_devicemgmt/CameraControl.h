@@ -69,6 +69,9 @@ public:
     Result startAsyncCapture(hal::FrameCallback cb) override;
     Result stopAsyncCapture() override;
 
+    // 标定专用：连续模式（不需 MCU 硬件触发）
+    Result startAsyncCaptureContinuous(hal::FrameCallback cb);
+
     double getTemperature() const override;
     Result setLaserOn(bool on) override;
     Result setLaserPower(int level) override;
@@ -105,7 +108,12 @@ private:
     mutable std::mutex m_callbackMutex;
     mutable std::mutex m_bufferMutex;  // 保护 tryDeliver 的缓冲区访问
 
-    void startSideCapture(int sideIndex);
+    // 最新配对帧（供 grabFrame 同步读取）
+    hal::StereoFrame m_latestFrame;
+    mutable std::mutex m_latestFrameMutex;
+    std::atomic<uint64_t> m_latestFrameSeq{0};
+
+    void startSideCapture(int sideIndex, bool continuous = false);
     void stopSideCapture(int sideIndex);
     void applySideParams(int sideIndex);
 };

@@ -71,6 +71,13 @@ private:
         frame.leftGray  = leftBuf.image.clone();
         frame.rightGray = rightBuf.image.clone();
 
+        // 保存最新配对帧（供 grabFrame 同步读取）
+        {
+            std::lock_guard<std::mutex> lk(m_owner->m_latestFrameMutex);
+            m_owner->m_latestFrame = frame;
+            m_owner->m_latestFrameSeq.fetch_add(1, std::memory_order_release);
+        }
+
         std::lock_guard cbLock(m_owner->m_callbackMutex);
         if (m_owner->m_frameCallback) {
             m_owner->m_frameCallback(frame);
@@ -261,7 +268,7 @@ hal::StereoExtrinsics CameraControl::getStereoExtrinsics() const { return {}; }
 // ============================================================================
 // 单侧采集
 // ============================================================================
-void CameraControl::startSideCapture(int sideIndex) {
+void CameraControl::startSideCapture(int sideIndex, bool continuous) {
     auto& side = m_sides[sideIndex];
 
     side.stream = side.device->OpenStream(0);
@@ -283,9 +290,14 @@ void CameraControl::startSideCapture(int sideIndex) {
     }
 
     side.featureControl->GetEnumFeature("TriggerSelector")->SetValue("FrameStart");
-    side.featureControl->GetEnumFeature("TriggerMode")->SetValue("On");
-    side.featureControl->GetEnumFeature("TriggerSource")->SetValue(m_config.triggerSource.c_str());
-    spdlog::info("[CameraControl] side {} 硬件触发: {}", sideIndex, m_config.triggerSource);
+    if (continuous) {
+        side.featureControl->GetEnumFeature("TriggerMode")->SetValue("Off");
+        spdlog::info("[CameraControl] side {} 连续模式（标定用）", sideIndex);
+    } else {
+        side.featureControl->GetEnumFeature("TriggerMode")->SetValue("On");
+        side.featureControl->GetEnumFeature("TriggerSource")->SetValue(m_config.triggerSource.c_str());
+        spdlog::info("[CameraControl] side {} 硬件触发: {}", sideIndex, m_config.triggerSource);
+    }
 
     side.featureControl->GetCommandFeature("AcquisitionStart")->Execute();
     side.isCapturing = true;
@@ -301,15 +313,15 @@ void CameraControl::stopSideCapture(int sideIndex) {
         side.featureControl->GetCommandFeature("AcquisitionStop")->Execute();
         side.stream->StopGrab();
         side.stream->UnregisterCaptureCallback();
+        side.stream->Close();
     } catch (CGalaxyException& e) {
         spdlog::error("[CameraControl] 停止采集异常: {}", e.what());
     }
+    try { side.stream = CGXStreamPointer(); } catch (...) {}
 
     delete side.eventHandler;
     side.eventHandler = nullptr;
 
-    side.stream->Close();
-    side.stream = CGXStreamPointer();
     side.isCapturing = false;
 }
 
@@ -351,39 +363,97 @@ bool CameraControl::isCapturing() const { return m_isCapturing; }
 // 同步抓帧
 // ============================================================================
 Result CameraControl::grabFrame(hal::StereoFrame& frame, int timeoutMs) {
-    if (!m_isCapturing) return Result::fail("未在采集状态");
+    // 异步采集模式：从回调写的最新帧缓冲读取
+    if (m_isCapturing) {
+        uint64_t startSeq = m_latestFrameSeq.load(std::memory_order_acquire);
+        auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(timeoutMs);
+        while (std::chrono::steady_clock::now() < deadline) {
+            uint64_t curSeq = m_latestFrameSeq.load(std::memory_order_acquire);
+            if (curSeq != startSeq) {
+                std::lock_guard<std::mutex> lk(m_latestFrameMutex);
+                if (!m_latestFrame.leftGray.empty() && !m_latestFrame.rightGray.empty()) {
+                    frame = m_latestFrame;
+                    return Result::ok();
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return Result::fail(-1, "grabFrame 等待新帧超时");
+    }
 
+    // 未在采集：临时开流（连续模式）
+    spdlog::info("[CameraControl] grabFrame: 未在采集，临时开流...");
+    try {
+        for (int s = 0; s < 2; ++s) {
+            if (!m_sides[s].isOpen) continue;
+            m_sides[s].featureControl->GetEnumFeature("TriggerMode")->SetValue("Off");
+            m_sides[s].stream = m_sides[s].device->OpenStream(0);
+            m_sides[s].stream->StartGrab();
+            m_sides[s].featureControl->GetCommandFeature("AcquisitionStart")->Execute();
+            m_sides[s].isCapturing = true;
+            spdlog::info("[CameraControl] grabFrame: side {} 临时开流成功", s);
+        }
+    } catch (CGalaxyException& e) {
+        spdlog::error("[CameraControl] grabFrame temp start failed: {}", e.what());
+        for (int s = 1; s >= 0; --s) {
+            try { m_sides[s].stream = CGXStreamPointer(); } catch (...) {}
+            m_sides[s].isCapturing = false;
+        }
+        return Result::fail(-5, std::string("临时开流失败: ") + e.what());
+    }
+
+    // 同步 GetImage 抓帧
+    Result result;
     try {
         CImageDataPointer leftData = m_sides[0].stream->GetImage(timeoutMs);
-        if (leftData->GetStatus() != GX_FRAME_STATUS_SUCCESS)
-            return Result::fail(-1, "左相机抓帧失败或超时");
-
-        CImageDataPointer rightData = m_sides[1].stream->GetImage(timeoutMs);
-        if (rightData->GetStatus() != GX_FRAME_STATUS_SUCCESS)
-            return Result::fail(-2, "右相机抓帧失败或超时");
-
-        frame.frameId = leftData->GetFrameID();
-        frame.timestamp = leftData->GetTimeStamp();
-
-        int lw = static_cast<int>(leftData->GetWidth());
-        int lh = static_cast<int>(leftData->GetHeight());
-        frame.leftGray.create(lh, lw, CV_8UC1);
-        std::memcpy(frame.leftGray.data, leftData->GetBuffer(), static_cast<size_t>(lh) * lw);
-
-        int rw = static_cast<int>(rightData->GetWidth());
-        int rh = static_cast<int>(rightData->GetHeight());
-        cv::Mat temp(rh, rw, CV_8UC1);
-        std::memcpy(temp.data, rightData->GetBuffer(), static_cast<size_t>(rh) * rw);
-
-        if (m_config.rotateRight180)
-            cv::rotate(temp, frame.rightGray, cv::ROTATE_180);
-        else
-            frame.rightGray = std::move(temp);
-
-        return Result::ok();
+        if (leftData->GetStatus() != GX_FRAME_STATUS_SUCCESS) {
+            result = Result::fail(-1, "左相机抓帧失败或超时");
+        } else {
+            CImageDataPointer rightData = m_sides[1].stream->GetImage(timeoutMs);
+            if (rightData->GetStatus() != GX_FRAME_STATUS_SUCCESS) {
+                result = Result::fail(-2, "右相机抓帧失败或超时");
+            } else {
+                frame.frameId = leftData->GetFrameID();
+                frame.timestamp = leftData->GetTimeStamp();
+                int lw = static_cast<int>(leftData->GetWidth());
+                int lh = static_cast<int>(leftData->GetHeight());
+                frame.leftGray.create(lh, lw, CV_8UC1);
+                std::memcpy(frame.leftGray.data, leftData->GetBuffer(),
+                            static_cast<size_t>(lh) * lw);
+                int rw = static_cast<int>(rightData->GetWidth());
+                int rh = static_cast<int>(rightData->GetHeight());
+                cv::Mat temp(rh, rw, CV_8UC1);
+                std::memcpy(temp.data, rightData->GetBuffer(),
+                            static_cast<size_t>(rh) * rw);
+                if (m_config.rotateRight180)
+                    cv::rotate(temp, frame.rightGray, cv::ROTATE_180);
+                else
+                    frame.rightGray = std::move(temp);
+                result = Result::ok();
+            }
+        }
     } catch (CGalaxyException& e) {
-        return Result::fail(-3, e.what());
+        result = Result::fail(-3, e.what());
+    } catch (...) {
+        result = Result::fail(-4, "grabFrame unknown error");
     }
+
+    // 关闭临时流
+    for (int s = 1; s >= 0; --s) {
+        if (!m_sides[s].isCapturing) continue;
+        try {
+            m_sides[s].featureControl->GetCommandFeature("AcquisitionStop")->Execute();
+            m_sides[s].stream->StopGrab();
+            m_sides[s].stream->Close();
+        } catch (CGalaxyException& e) {
+            spdlog::warn("[CameraControl] temp close side {} err: {}", s, e.what());
+        } catch (...) {}
+        try { m_sides[s].stream = CGXStreamPointer(); } catch (...) {}
+        m_sides[s].isCapturing = false;
+    }
+
+    return result;
 }
 
 // ============================================================================
@@ -395,6 +465,33 @@ Result CameraControl::startAsyncCapture(hal::FrameCallback cb) {
         m_frameCallback = std::move(cb);
     }
     return startCapture();
+}
+
+Result CameraControl::startAsyncCaptureContinuous(hal::FrameCallback cb) {
+    if (!m_isOpen) return Result::fail("设备未打开");
+    if (m_isCapturing) {
+        std::lock_guard lock(m_callbackMutex);
+        m_frameCallback = std::move(cb);
+        return Result::ok("已在采集");
+    }
+
+    {
+        std::lock_guard lock(m_callbackMutex);
+        m_frameCallback = std::move(cb);
+    }
+
+    try {
+        startSideCapture(0, true);
+        startSideCapture(1, true);
+    } catch (CGalaxyException& e) {
+        stopSideCapture(0);
+        stopSideCapture(1);
+        return Result::fail(-1, e.what());
+    }
+
+    m_isCapturing = true;
+    spdlog::info("[CameraControl] 双目连续采集已启动（标定模式）");
+    return Result::ok();
 }
 
 Result CameraControl::stopAsyncCapture() {
