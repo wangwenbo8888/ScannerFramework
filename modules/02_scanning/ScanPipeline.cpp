@@ -109,9 +109,11 @@ bool ScanPipeline::initialize() {
         }
 
         // 标记点链 (CPU — 必须成功)
-        zernike_ = std::make_unique<calib::ZernikeEdgeCPU>();
-        ellipseFit_ = std::make_unique<calib::EllipseFitCPU>();
-        markerMatch_ = std::make_unique<calib::MarkerMatchCPU>();
+        imgSplit_        = std::make_unique<calib::ImageSplitCPU>();
+        zernike_         = std::make_unique<calib::ZernikeEdgeCPU>();
+        imgMerge_        = std::make_unique<calib::ImageMergeCPU>();
+        ellipseFit_      = std::make_unique<calib::EllipseFitCPU>();
+        markerMatch_     = std::make_unique<calib::MarkerMatchCPU>();
         // 调大 max_points（默认100太小）
         {
             calib::MarkerMatchCPUParams mp = markerMatch_->GetParams();
@@ -119,7 +121,17 @@ bool ScanPipeline::initialize() {
             markerMatch_->SetParams(mp);
         }
         pointReconstruct_ = std::make_unique<calib::PointReconstructCPU>();
-        spdlog::info("[ScanPipeline] 标记点链OK");
+        spdlog::info("[ScanPipeline] 标记点链OK (split+zernike+merge+ellipse+match+reconstruct)");
+
+        // 中间算子 (需标定参数才生效)
+        try {
+            undistortCpu_    = std::make_unique<calib::MarkerUndistortCPU>();
+            epipolarIntersect_ = std::make_unique<calib::EpipolarIntersectCPU>();
+            edgeMatch_       = std::make_unique<calib::EdgeMatchCPU>();
+            spdlog::info("[ScanPipeline] 中间算子OK (undistort+epipolar+edge_match)");
+        } catch (const std::exception& e) {
+            spdlog::warn("[ScanPipeline] 中间算子创建失败: {}", e.what());
+        }
 
         // 配准 (可选)
         try {
@@ -184,6 +196,7 @@ void ScanPipeline::reset() {
     if (markerFuse_) markerFuse_->Clear();
     if (laserFuseCpu_) laserFuseCpu_->Clear();
     isFirstFrame_ = true;
+    prevState_ = {};
     frameCount_ = 0;
 }
 
@@ -285,101 +298,210 @@ ScanFrameOutput ScanPipeline::processMarkerBranch(
 
     ScanFrameOutput output;
 
-    // CCL (CPU)
-    cv::Mat labelsL, statsL, centroidsL;
-    int nL = cv::connectedComponentsWithStats(markerMaskL, labelsL, statsL, centroidsL, 8, CV_32S);
-    cv::Mat labelsR, statsR, centroidsR;
-    int nR = cv::connectedComponentsWithStats(markerMaskR, labelsR, statsR, centroidsR, 8, CV_32S);
-
-    // 标记点 ROI 提取 → zernike → ellipse_fit
-    auto detectCenters = [&](const cv::Mat& gray) -> std::vector<cv::Point2f> {
-        std::vector<cv::Point2f> centers;
+    // ===== CCL: 连通域分析 =====
+    auto extractROIs = [](const cv::Mat& gray) -> std::vector<cv::Rect> {
         cv::Mat mask;
         cv::adaptiveThreshold(gray, mask, 255,
             cv::ADAPTIVE_THRESH_GAUSSIAN_C, cv::THRESH_BINARY, 51, -5);
-
         cv::Mat lbl, stt, cen;
         int n = cv::connectedComponentsWithStats(mask, lbl, stt, cen, 8, CV_32S);
-        int skipped = 0;
+        std::vector<cv::Rect> rois;
         for (int i = 1; i < n; ++i) {
             int area = stt.at<int>(i, cv::CC_STAT_AREA);
-            if (area < 15 || area > 5000) { skipped++; continue; }
+            if (area < 15 || area > 5000) continue;
             int x = std::max(0, (int)stt.at<int>(i, cv::CC_STAT_LEFT) - 5);
             int y = std::max(0, (int)stt.at<int>(i, cv::CC_STAT_TOP) - 5);
             int w = std::min(gray.cols - x, (int)stt.at<int>(i, cv::CC_STAT_WIDTH) + 10);
             int h = std::min(gray.rows - y, (int)stt.at<int>(i, cv::CC_STAT_HEIGHT) + 10);
-            if (w < 5 || h < 5) { skipped++; continue; }
-
-            try {
-                cv::Mat sub = gray(cv::Rect(x, y, w, h)).clone();
-                auto zr = zernike_->Execute(sub);
-                if (!zr.success || zr.edgePoints.empty()) { skipped++; continue; }
-
-                auto er = ellipseFit_->Execute(zr.edgePoints);
-                if (!er.success) { skipped++; continue; }
-
-                auto c = er.centerPoint2f();
-                centers.emplace_back(c.x + x, c.y + y);
-            } catch (...) { skipped++; }
+            if (w > 5 && h > 5) rois.emplace_back(x, y, w, h);
         }
-        spdlog::info("[ScanPipeline] detectCenters: components={}, detected={}, skipped={}",
-            n - 1, centers.size(), skipped);
-        return centers;
+        return rois;
     };
 
-    auto centersL = detectCenters(leftGray);
-    auto centersR = detectCenters(rightGray);
+    auto roisL = extractROIs(leftGray);
+    auto roisR = extractROIs(rightGray);
+    spdlog::info("[ScanPipeline] CCL: ROIs L={} R={}", roisL.size(), roisR.size());
+    if (roisL.size() < 3 || roisR.size() < 3) return output;
 
-    spdlog::info("[ScanPipeline] L={} R={} calib.valid={}", centersL.size(), centersR.size(), calib_.valid);
+    // ===== 03: image_split — 按ROI裁剪子图 =====
+    auto splitL = imgSplit_->Execute(leftGray, roisL);
+    auto splitR = imgSplit_->Execute(rightGray, roisR);
+    if (!splitL.success || !splitR.success) return output;
 
-    if (centersL.size() < 3 || centersR.size() < 3) {
-        spdlog::warn("[ScanPipeline] 标记点不足 L={} R={}", centersL.size(), centersR.size());
-        return output;
+    // ===== 04: zernike_edge — 各子图边缘提取 =====
+    std::vector<std::vector<calib::EdgePoint>> edgePtsL, edgePtsR;
+    for (auto& sub : splitL.splitImages) {
+        auto zr = zernike_->Execute(sub);
+        edgePtsL.push_back(zr.success ? zr.edgePoints : std::vector<calib::EdgePoint>{});
+    }
+    for (auto& sub : splitR.splitImages) {
+        auto zr = zernike_->Execute(sub);
+        edgePtsR.push_back(zr.success ? zr.edgePoints : std::vector<calib::EdgePoint>{});
     }
 
-    // 08: marker_match
-    auto matchR = markerMatch_->Execute(centersL, centersR);
+    // ===== 05: image_merge — 合并到大图坐标系 + groupIds =====
+    auto mergeL = imgMerge_->Execute(edgePtsL, roisL);
+    auto mergeR = imgMerge_->Execute(edgePtsR, roisR);
+    if (!mergeL.success || !mergeR.success) return output;
+    spdlog::info("[ScanPipeline] merge: L={}pts {}grp, R={}pts {}grp",
+        mergeL.mergedEdgeCount, mergeL.groupCount, mergeR.mergedEdgeCount, mergeR.groupCount);
+
+    // ===== 06: undistort_cpu — 双目去畸变矫正（需标定参数）=====
+    std::vector<calib::EdgePoint> undistL, undistR;
+    std::vector<int> grpL, grpR;
+    if (calib_.valid && undistortCpu_) {
+        undistortCpu_->SetRectifyMatrices(calib_.R1, calib_.R2, calib_.P1, calib_.P2, calib_.Q);
+        auto undistR_result = undistortCpu_->Execute(
+            mergeL.mergedEdgePoints, mergeR.mergedEdgePoints,
+            mergeL.groupIds, mergeR.groupIds);
+        if (undistR_result.success) {
+            // 转回 EdgePoint（矫正后坐标）
+            undistL.resize(undistR_result.rectifiedPoints1.size());
+            undistR.resize(undistR_result.rectifiedPoints2.size());
+            for (size_t i = 0; i < undistL.size(); ++i) {
+                undistL[i].x = undistR_result.rectifiedPoints1[i].x;
+                undistL[i].y = undistR_result.rectifiedPoints1[i].y;
+            }
+            for (size_t i = 0; i < undistR.size(); ++i) {
+                undistR[i].x = undistR_result.rectifiedPoints2[i].x;
+                undistR[i].y = undistR_result.rectifiedPoints2[i].y;
+            }
+            grpL = undistR_result.groupIds1;
+            grpR = undistR_result.groupIds2;
+            spdlog::info("[ScanPipeline] undistort OK: L={}pts R={}pts", undistL.size(), undistR.size());
+        }
+    }
+    // 无标定参数时用原始坐标
+    if (undistL.empty()) {
+        undistL = mergeL.mergedEdgePoints;
+        undistR = mergeR.mergedEdgePoints;
+        grpL = mergeL.groupIds;
+        grpR = mergeR.groupIds;
+    }
+
+    // ===== 07: ellipse_fit — 按组拟合椭圆中心 =====
+    auto fitEllipses = [&](const std::vector<calib::EdgePoint>& pts,
+                           const std::vector<int>& gids, int nGroups)
+        -> std::pair<std::vector<cv::Point2f>, std::vector<calib::EllipseFitCPUResult>> {
+        std::vector<cv::Point2f> centers;
+        std::vector<calib::EllipseFitCPUResult> ellipseResults;
+        // 按组分割
+        std::vector<std::vector<calib::EdgePoint>> byGroup(nGroups);
+        for (size_t i = 0; i < pts.size() && i < gids.size(); ++i) {
+            if (gids[i] >= 0 && gids[i] < nGroups) byGroup[gids[i]].push_back(pts[i]);
+        }
+        for (auto& grp : byGroup) {
+            if (grp.size() < 5) { centers.emplace_back(-1, -1); ellipseResults.emplace_back(); continue; }
+            auto er = ellipseFit_->Execute(grp);
+            if (er.success) {
+                centers.push_back(er.centerPoint2f());
+                ellipseResults.push_back(std::move(er));
+            } else {
+                centers.emplace_back(-1, -1);
+                ellipseResults.emplace_back();
+            }
+        }
+        return {centers, std::move(ellipseResults)};
+    };
+
+    int nGrpL = mergeL.groupCount > 0 ? mergeL.groupCount : (int)roisL.size();
+    int nGrpR = mergeR.groupCount > 0 ? mergeR.groupCount : (int)roisR.size();
+    auto [centersL, ellipsesL] = fitEllipses(undistL, grpL, nGrpL);
+    auto [centersR, ellipsesR] = fitEllipses(undistR, grpR, nGrpR);
+
+    // 过滤无效中心
+    std::vector<cv::Point2f> validL, validR;
+    std::vector<int> validIdxL, validIdxR;
+    for (size_t i = 0; i < centersL.size(); ++i) {
+        if (centersL[i].x >= 0) { validL.push_back(centersL[i]); validIdxL.push_back(i); }
+    }
+    for (size_t i = 0; i < centersR.size(); ++i) {
+        if (centersR[i].x >= 0) { validR.push_back(centersR[i]); validIdxR.push_back(i); }
+    }
+    spdlog::info("[ScanPipeline] ellipse: validL={} validR={}", validL.size(), validR.size());
+
+    if (validL.size() < 3 || validR.size() < 3) return output;
+
+    // ===== 08: marker_match — 立体匹配 =====
+    auto matchR = markerMatch_->Execute(validL, validR);
     if (!matchR.success || matchR.centerMatches.empty()) {
-        spdlog::warn("[ScanPipeline] marker_match 失败 L={} R={}", centersL.size(), centersR.size());
+        spdlog::warn("[ScanPipeline] marker_match 失败");
         return output;
     }
-    spdlog::info("[ScanPipeline] marker_match OK: {} 对", matchR.centerMatches.size());
+    spdlog::info("[ScanPipeline] match OK: {} 对", matchR.centerMatches.size());
 
-    // 11: point_reconstruct（需要标定参数）
+    // ===== 09: epipolar_intersect + 10: edge_match =====
+    // （需要有效椭圆参数；当前简化：跳过边缘点精化，直接用中心重建）
+
+    // ===== 11: point_reconstruct =====
     if (calib_.valid) {
         pointReconstruct_->SetProjectionMatrices(calib_.P1, calib_.P2, calib_.Q);
-
         std::vector<int> leftIds, rightIds;
         for (size_t i = 0; i < matchR.centerMatches.size(); ++i) {
             leftIds.push_back(static_cast<int>(i));
             rightIds.push_back(matchR.centerMatches[i]);
         }
-
-        auto reconR = pointReconstruct_->Execute(centersL, centersR, leftIds, rightIds,
+        auto reconR = pointReconstruct_->Execute(validL, validR, leftIds, rightIds,
                                                   matchR.centerMatches);
         if (reconR.success) {
             for (auto& mr : reconR.markerResults) {
                 output.markerPoints3d.emplace_back(
-                    static_cast<float>(mr.centerX),
-                    static_cast<float>(mr.centerY),
-                    static_cast<float>(mr.centerZ));
+                    static_cast<float>(mr.centerX), static_cast<float>(mr.centerY), static_cast<float>(mr.centerZ));
                 output.markerNormals.emplace_back(
-                    static_cast<float>(mr.normalX),
-                    static_cast<float>(mr.normalY),
-                    static_cast<float>(mr.normalZ));
+                    static_cast<float>(mr.normalX), static_cast<float>(mr.normalY), static_cast<float>(mr.normalZ));
                 output.markerRadii.push_back(0.0f);
             }
+            spdlog::info("[ScanPipeline] reconstruct OK: {} 3D points", output.markerPoints3d.size());
         }
+    } else {
+        // 无标定：输出2D中心（调试用）
+        spdlog::info("[ScanPipeline] 无标定参数，跳过3D重建");
     }
 
-    // 配准（首帧 I/0，后续光流）
-    output.R = cv::Matx33d::eye();
-    output.T = cv::Vec3d(0, 0, 0);
+    // ===== 配准: optical_flow_fuse =====
+    if (!output.markerPoints3d.empty()) {
+        std::vector<cv::Point3d> pos3d(output.markerPoints3d.size());
+        std::vector<cv::Vec3d> norm3d(output.markerNormals.size());
+        for (size_t i = 0; i < pos3d.size(); ++i)
+            pos3d[i] = cv::Point3d(output.markerPoints3d[i].x, output.markerPoints3d[i].y, output.markerPoints3d[i].z);
+        for (size_t i = 0; i < norm3d.size() && i < pos3d.size(); ++i)
+            norm3d[i] = cv::Vec3d(output.markerNormals[i].x, output.markerNormals[i].y, output.markerNormals[i].z);
+        if (norm3d.size() < pos3d.size()) norm3d.resize(pos3d.size(), cv::Vec3d(0, 0, 1));
+
+        if (isFirstFrame_) {
+            output.R = cv::Matx33d::eye();
+            output.T = cv::Vec3d(0, 0, 0);
+            isFirstFrame_ = false;
+            spdlog::info("[ScanPipeline] 首帧: R=I T=0");
+        } else if (opticalFlow_ && !prevState_.empty()) {
+            try {
+                auto regR = opticalFlow_->Execute(pos3d, norm3d, prevState_);
+                if (regR.success) {
+                    output.R = regR.R;
+                    output.T = regR.T;
+                    spdlog::info("[ScanPipeline] 配准OK: matched={}/{} rmse={:.3f}",
+                        regR.getMatchedCount(), pos3d.size(), regR.statistics.rmse);
+                } else {
+                    spdlog::warn("[ScanPipeline] 配准失败: {} → 上一帧R/T", regR.message);
+                    output.R = prevState_.R;
+                    output.T = prevState_.T;
+                }
+            } catch (const std::exception& e) {
+                spdlog::warn("[ScanPipeline] 配准异常: {}", e.what());
+                output.R = prevState_.R;
+                output.T = prevState_.T;
+            }
+        }
+        prevState_.rawPositions = pos3d;
+        prevState_.rawNormals = norm3d;
+        prevState_.R = output.R;
+        prevState_.T = output.T;
+    }
+
     output.globalMarkerCount = static_cast<int>(matchR.centerMatches.size());
     output.success = !output.markerPoints3d.empty();
     return output;
 }
-
 // ============================================================================
 // 激光分支
 // ============================================================================

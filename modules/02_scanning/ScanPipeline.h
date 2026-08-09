@@ -24,6 +24,9 @@
 #include <mutex>
 #include <functional>
 
+// 配准状态结构
+#include "marker_optical_flow_fuse_cpu.h"  // PrevFrameState
+
 // 前向声明算子
 namespace calib {
     class LaserMarkingSeparationCUDA;
@@ -148,6 +151,7 @@ private:
     std::unique_ptr<calib::MarkerOpticalFlowFuseCPU> opticalFlow_;
     std::unique_ptr<calib::FrameFuseCPU>             frameFuse_;
     bool isFirstFrame_ = true;
+    calib::PrevFrameState prevState_;  // 上一帧状态（供光流配准用）
 
     // ---- 激光链算子 (CUDA) ----
     std::unique_ptr<calib::StegerExtractorCUDA>  steger_;
