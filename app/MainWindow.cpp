@@ -948,7 +948,7 @@ void MainWindow::scanLoop() {
                         pts.emplace_back(m.x, m.y, m.z);
                     }
                     QMetaObject::invokeMethod(this, [this, pts]() {
-                        if (m_3dView) m_3dView->loadPointCloud(pts);
+                        if (m_3dView) m_3dView->loadMarkerPoints(pts);
                     });
                 }
             }
@@ -977,7 +977,7 @@ void MainWindow::scanLoop() {
                 pts.emplace_back(m.x, m.y, m.z);
             }
             QMetaObject::invokeMethod(this, [this, pts]() {
-                if (m_3dView) m_3dView->loadPointCloud(pts);
+                if (m_3dView) m_3dView->loadMarkerPoints(pts);
             });
         }
     }
@@ -1364,7 +1364,7 @@ QWidget *MainWindow::createToolBar()
                         // 在3D视图显示导入的标志点
                         if (m_3dView && !markers.empty()) {
                             m_3dView->clearScene();
-                            m_3dView->loadPointCloud(markers);
+                            m_3dView->loadMarkerPoints(markers);
                             m_3dView->setCenterOverlayVisible(true);
                             auto* manip = new osgGA::TrackballManipulator();
                             m_3dView->setCameraManipulator(manip);

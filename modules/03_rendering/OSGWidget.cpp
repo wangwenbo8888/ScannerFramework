@@ -1646,31 +1646,84 @@ void OSGWidget::loadMarkerPoints(const std::vector<osg::Vec3>& markers,
 {
     if (markers.empty()) return;
 
-    if (!m_markerRoot) {
-        m_markerRoot = new osg::Group;
-        m_markerGeode = new osg::Geode;
-        m_markerGeom = new osg::Geometry;
-        m_markerGeom->setUseVertexBufferObjects(true);
-        m_markerGeom->setUseDisplayList(false);
-        m_markerGeom->setDataVariance(osg::Object::DYNAMIC);
-        m_markerGeode->addDrawable(m_markerGeom);
-        m_markerRoot->addChild(m_markerGeode);
-        m_root->addChild(m_markerRoot);
-
-        osg::ref_ptr<osg::Point> pointSize = new osg::Point;
-        pointSize->setSize(5.0f);  // 标志点更大
-        m_markerRoot->getOrCreateStateSet()->setAttribute(pointSize);
-
-        m_markerCoords = new osg::Vec3Array;
-        m_markerColors = new osg::Vec4Array;
+    // 移除旧的标志点节点
+    if (m_markerRoot) {
+        m_root->removeChild(m_markerRoot);
+        m_markerRoot = nullptr;
     }
 
-    m_markerCoords->assign(markers.begin(), markers.end());
-    m_markerColors->resize(markers.size(), color);
-    m_markerGeom->setVertexArray(m_markerCoords);
-    m_markerGeom->setColorArray(m_markerColors);
-    m_markerGeom->setColorBinding(osg::Geometry::BIND_PER_VERTEX);
-    m_markerGeom->setPrimitiveSet(0, new osg::DrawArrays(osg::DrawArrays::POINTS, 0, (int)markers.size()));
+    // 创建同心圆纹理（外黑内白）
+    // 内圆半径4mm白色，黑圈宽2mm，总半径6mm
+    const int texSize = 128;
+    const float outerRadius = 6.0f;  // mm
+    const float innerRadius = 4.0f;  // mm
+    const float pxPerMm = texSize / (2.0f * outerRadius);
+    const int innerPx = static_cast<int>(innerRadius * pxPerMm);
+    const int outerPx = static_cast<int>(outerRadius * pxPerMm);
+
+    QImage img(texSize, texSize, QImage::Format_RGBA8888);
+    img.fill(Qt::transparent);
+    QPainter painter(&img);
+    painter.setRenderHint(QPainter::Antialiasing);
+    int cx = texSize / 2, cy = texSize / 2;
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(0, 0, 0, 255));
+    painter.drawEllipse(cx - outerPx, cy - outerPx, outerPx * 2, outerPx * 2);
+    painter.setBrush(QColor(255, 255, 255, 255));
+    painter.drawEllipse(cx - innerPx, cy - innerPx, innerPx * 2, innerPx * 2);
+    painter.end();
+
+    osg::ref_ptr<osg::Image> osgImage = new osg::Image;
+    osgImage->allocateImage(texSize, texSize, 1, GL_RGBA, GL_UNSIGNED_BYTE);
+    memcpy(osgImage->data(), img.mirrored().bits(), texSize * texSize * 4);
+
+    osg::ref_ptr<osg::Texture2D> texture = new osg::Texture2D(osgImage);
+    texture->setFilter(osg::Texture::MIN_FILTER, osg::Texture::LINEAR_MIPMAP_LINEAR);
+    texture->setFilter(osg::Texture::MAG_FILTER, osg::Texture::LINEAR);
+    texture->setWrap(osg::Texture::WRAP_S, osg::Texture::CLAMP_TO_BORDER);
+    texture->setWrap(osg::Texture::WRAP_T, osg::Texture::CLAMP_TO_BORDER);
+
+    // 用 Geode + Geometry 绘制四边形（始终面向 Z 轴，适合俯视扫描场景）
+    osg::ref_ptr<osg::Geode> geode = new osg::Geode;
+    osg::ref_ptr<osg::Geometry> geom = new osg::Geometry;
+    geom->setUseVertexBufferObjects(true);
+    geom->setDataVariance(osg::Object::DYNAMIC);
+
+    const float halfSize = outerRadius;  // 6mm
+    osg::ref_ptr<osg::Vec3Array> coords = new osg::Vec3Array;
+    osg::ref_ptr<osg::Vec2Array> texcoords = new osg::Vec2Array;
+    osg::ref_ptr<osg::Vec3Array> normals = new osg::Vec3Array;
+    normals->push_back(osg::Vec3(0, 0, 1));
+
+    for (size_t i = 0; i < markers.size(); ++i) {
+        const osg::Vec3& pos = markers[i];
+        // 四个顶点（XY 平面四边形）
+        coords->push_back(pos + osg::Vec3(-halfSize, -halfSize, 0));
+        coords->push_back(pos + osg::Vec3( halfSize, -halfSize, 0));
+        coords->push_back(pos + osg::Vec3( halfSize,  halfSize, 0));
+        coords->push_back(pos + osg::Vec3(-halfSize,  halfSize, 0));
+        texcoords->push_back(osg::Vec2(0, 0));
+        texcoords->push_back(osg::Vec2(1, 0));
+        texcoords->push_back(osg::Vec2(1, 1));
+        texcoords->push_back(osg::Vec2(0, 1));
+    }
+
+    geom->setVertexArray(coords);
+    geom->setTexCoordArray(0, texcoords);
+    geom->setNormalArray(normals);
+    geom->setNormalBinding(osg::Geometry::BIND_OVERALL);
+    geom->addPrimitiveSet(new osg::DrawArrays(osg::PrimitiveSet::QUADS, 0, (int)coords->size()));
+
+    geode->addDrawable(geom);
+
+    osg::StateSet* ss = geode->getOrCreateStateSet();
+    ss->setTextureAttributeAndModes(0, texture, osg::StateAttribute::ON);
+    ss->setMode(GL_BLEND, osg::StateAttribute::ON);
+    ss->setMode(GL_LIGHTING, osg::StateAttribute::OFF);
+    ss->setRenderingHint(osg::StateSet::TRANSPARENT_BIN);
+
+    m_markerRoot = geode;
+    m_root->addChild(m_markerRoot);
 }
 
 // ============================================================================
