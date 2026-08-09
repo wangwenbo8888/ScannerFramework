@@ -334,6 +334,12 @@ void MarkerCloudFuseCPU::Clear() noexcept {
     pImpl_->stats_ = MarkerCloudFuseCPUStats();
 }
 
+void MarkerCloudFuseCPU::Seed(const std::vector<MarkerFuseInput>& importedPoints) {
+    // 预填充导入点（无变换，已在全球坐标系）
+    if (!importedPoints.empty())
+        Execute(importedPoints);
+}
+
 // ============================================================
 // accessors
 // ============================================================

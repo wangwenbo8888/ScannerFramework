@@ -27,6 +27,11 @@ set(MOD_SCANNING
     ${CMAKE_SOURCE_DIR}/modules/02_scanning/ScannerWindow.cpp
     ${CMAKE_SOURCE_DIR}/modules/02_scanning/ScannerWindow.h
     ${CMAKE_SOURCE_DIR}/modules/02_scanning/ScannerWindow.ui
+    ${CMAKE_SOURCE_DIR}/modules/02_scanning/ScanWorkflow.cpp
+    ${CMAKE_SOURCE_DIR}/modules/02_scanning/ScanWorkflow.h
+    ${CMAKE_SOURCE_DIR}/modules/02_scanning/ScanConfig.h
+    ${CMAKE_SOURCE_DIR}/modules/02_scanning/ScanPipeline.cpp
+    ${CMAKE_SOURCE_DIR}/modules/02_scanning/ScanPipeline.h
 )
 
 set(MOD_RENDERING

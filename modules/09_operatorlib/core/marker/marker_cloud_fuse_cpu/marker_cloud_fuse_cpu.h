@@ -120,6 +120,9 @@ public:
     void Clear() noexcept;
     void Reserve(size_t voxelCount);
 
+    /// 情况C: 预填充导入标记点（必须在任何扫描帧之前调用）
+    void Seed(const std::vector<MarkerFuseInput>& importedPoints);
+
     size_t GetVoxelCount() const noexcept;
     size_t GetFusedPointCount() const noexcept;
     const std::vector<MarkerCloudPoint>& GetFusedPoints() const;
