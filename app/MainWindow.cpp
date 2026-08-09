@@ -12,6 +12,7 @@
 #include "stubs/scan_workflow.h"
 #include "MCUDriver.h"
 #include "ScannerSerialPort.h"
+#include "ScanPipeline.h"
 #include "file_io.h"
 #include <spdlog/spdlog.h>
 #include <osg/Vec3>
@@ -178,7 +179,10 @@ MainWindow::MainWindow(AppContext* appCtx, QWidget *parent) : QMainWindow(parent
     startInfoTimer();
 }
 
-MainWindow::~MainWindow() {}
+MainWindow::~MainWindow() {
+    m_scanning = false;
+    if (m_scanThread.joinable()) m_scanThread.join();
+}
 
 void MainWindow::onIntegrateTestClicked()
 {
@@ -729,8 +733,254 @@ void MainWindow::onScanClicked()
     }
 }
 
+// ============================================================================
+// 三种扫描模式
+// ============================================================================
+
+void MainWindow::onScanMarkers() {
+    spdlog::info("[Scan] 标点扫描 (情况A: 纯标记点)");
+    startScanWithConfig(Scanner::workflow::ScanConfig::ModeA(), 2);
+}
+
+void MainWindow::onScanMesh() {
+    spdlog::info("[Scan] 面片扫描 (情况B: 标记点+激光)");
+    startScanWithConfig(Scanner::workflow::ScanConfig::ModeB(), 3);
+}
+
+void MainWindow::onScanPointCloud() {
+    spdlog::info("[Scan] 点云扫描 (情况C: 导入标记点+标记点+激光)");
+    startScanWithConfig(Scanner::workflow::ScanConfig::ModeC(), 4);
+}
+
+void MainWindow::onStopScan() {
+    stopScan();
+}
+
+void MainWindow::stopScan() {
+    if (!m_scanning) return;
+    spdlog::info("[Scan] 停止扫描 (模式={})", m_scanModeIdx);
+    m_scanning = false;
+    if (m_scanThread.joinable()) m_scanThread.join();
+    m_scanModeIdx = -1;
+
+    auto* cam = m_appCtx ? m_appCtx->camera() : nullptr;
+    if (cam && cam->isCapturing()) cam->stopCapture();
+
+    auto* scannerSerial = m_appCtx ? m_appCtx->scannerSerial() : nullptr;
+    if (scannerSerial && scannerSerial->isOpen()) {
+        scannerSerial->send("N11 H0;");
+        scannerSerial->send("N14 B0;");
+        scannerSerial->send("N13 L0;");
+    }
+
+    statusBar()->showMessage(QStringLiteral("扫描已停止"));
+}
+
+void MainWindow::startScanWithConfig(const Scanner::workflow::ScanConfig& config, int modeIdx) {
+    // 正在扫描：先停
+    if (m_scanning) {
+        stopScan();
+    }
+
+    auto* cam = m_appCtx ? m_appCtx->camera() : nullptr;
+    if (!cam || !cam->isOpen()) {
+        QMessageBox::warning(this, QStringLiteral("扫描"), QStringLiteral("相机未连接"));
+        return;
+    }
+
+    // 切换到扫描视图
+    if (m_calibBoard2D) m_calibBoard2D->hide();
+    if (m_3dView) {
+        m_3dView->clearScene();
+        m_3dView->setCenterOverlayVisible(true);
+        m_3dView->viewer()->getCamera()->setClearColor(osg::Vec4(0.118f, 0.118f, 0.118f, 1.0f));
+        auto* manip = new osgGA::TrackballManipulator();
+        m_3dView->setCameraManipulator(manip);
+        manip->home(0);
+    }
+    if (m_floatingToolbar) { m_floatingToolbar->setVisible(true); m_floatingToolbar->show(); }
+
+    // 创建并初始化扫描流水线
+    if (!m_scanPipeline) {
+        m_scanPipeline = std::make_unique<Scanner::workflow::ScanPipeline>(config);
+    } else {
+        m_scanPipeline->reset();
+    }
+
+    // 加载标定参数（如果有）
+    if (m_lastCameraCalib.success) {
+        Scanner::workflow::ScanCalibration calib;
+        calib.cameraMatrixL = m_lastCameraCalib.cameraMatrixL;
+        calib.distCoeffsL = m_lastCameraCalib.distCoeffsL;
+        calib.cameraMatrixR = m_lastCameraCalib.cameraMatrixR;
+        calib.distCoeffsR = m_lastCameraCalib.distCoeffsR;
+        calib.R1 = m_lastCameraCalib.R1;
+        calib.R2 = m_lastCameraCalib.R2;
+        calib.P1 = m_lastCameraCalib.P1;
+        calib.P2 = m_lastCameraCalib.P2;
+        calib.Q = m_lastCameraCalib.Q;
+        calib.imageSize = cv::Size(2048, 1536);
+        calib.valid = true;
+        m_scanPipeline->setCalibration(calib);
+        spdlog::info("[Scan] 标定参数已加载");
+    } else {
+        spdlog::warn("[Scan] 无标定参数，3D重建将跳过");
+    }
+
+    // 设置进度回调
+    m_scanPipeline->setProgressCallback([this](const Scanner::workflow::ScanProgress& p) {
+        QMetaObject::invokeMethod(this, [this, p]() {
+            statusBar()->showMessage(QStringLiteral("扫描中: %1帧 | 标记点 %2 | 融合 %3 | %4")
+                .arg(p.frameCount).arg(p.markerCount).arg(p.fusedPointCount)
+                .arg(QString::fromStdString(p.status)));
+        });
+    });
+
+    if (!m_scanPipeline->initialize()) {
+        QMessageBox::warning(this, QStringLiteral("扫描"), QStringLiteral("流水线初始化失败"));
+        return;
+    }
+
+    // 确保相机在连续采集模式
+    if (!cam->isCapturing()) {
+        statusBar()->showMessage(QStringLiteral("启动相机连续采集..."));
+        QApplication::processEvents();
+        try {
+            cam->setExposure(config.exposureMarkerMs);
+            auto r = cam->startAsyncCaptureContinuous([](const Scanner::hal::StereoFrame&) {});
+            spdlog::info("[Scan] startAsyncCaptureContinuous success={}", r.success);
+            if (!r.success) {
+                QMessageBox::warning(this, QStringLiteral("扫描"),
+                    QStringLiteral("相机采集启动失败: %1").arg(QString::fromStdString(r.message)));
+                return;
+            }
+            // 等回调产帧
+            QThread::msleep(500);
+        } catch (const std::exception& e) {
+            spdlog::error("[Scan] 相机启动异常: {}", e.what());
+            QMessageBox::warning(this, QStringLiteral("扫描"),
+                QStringLiteral("相机启动异常: %1").arg(QString::fromUtf8(e.what())));
+            return;
+        }
+    }
+
+    // 开补光灯 + 激光
+    auto* scannerSerial = m_appCtx ? m_appCtx->scannerSerial() : nullptr;
+    if (scannerSerial && scannerSerial->isOpen()) {
+        if (config.enableLaser) {
+            scannerSerial->send("N10 H50 B60 T1 V2 L60;");
+        } else {
+            scannerSerial->send("N10 H50 B60 T1 V2 L0;");
+        }
+    }
+
+    // 启动扫描线程
+    m_scanning = true;
+    m_scanModeIdx = modeIdx;
+    statusBar()->showMessage(QStringLiteral("扫描中... (再次点击同一按钮停止)"));
+    m_scanThread = std::thread(&MainWindow::scanLoop, this);
+}
+
+void MainWindow::scanLoop() {
+    spdlog::info("[Scan] 扫描线程启动");
+    auto* cam = m_appCtx ? m_appCtx->camera() : nullptr;
+    int frameCount = 0;
+
+    while (m_scanning && cam) {
+        try {
+            Scanner::hal::StereoFrame sf;
+            auto gr = cam->grabFrame(sf, 3000);
+            if (!gr.success || sf.leftGray.empty()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                continue;
+            }
+
+            ++frameCount;
+            auto output = m_scanPipeline->processFrame(sf.leftGray, sf.rightGray);
+
+            // 定期更新3D视图（每50帧）
+            if (frameCount % 50 == 0 && m_3dView) {
+                const auto& markers = m_scanPipeline->getFusedMarkers();
+                if (!markers.empty()) {
+                    std::vector<osg::Vec3> pts;
+                    pts.reserve(markers.size());
+                    for (const auto& m : markers) {
+                        pts.emplace_back(m.x, m.y, m.z);
+                    }
+                    QMetaObject::invokeMethod(this, [this, pts]() {
+                        if (m_3dView) m_3dView->loadPointCloud(pts);
+                    });
+                }
+            }
+        } catch (const std::exception& e) {
+            spdlog::error("[Scan] 帧 {} 异常: {}", frameCount, e.what());
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        } catch (...) {
+            spdlog::error("[Scan] 帧 {} 未知异常", frameCount);
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }
+
+    spdlog::info("[Scan] 扫描线程结束 ({}帧)", frameCount);
+
+    // 最终更新点云
+    if (m_3dView) {
+        const auto& markers = m_scanPipeline->getFusedMarkers();
+        if (!markers.empty()) {
+            std::vector<osg::Vec3> pts;
+            pts.reserve(markers.size());
+            for (const auto& m : markers) {
+                pts.emplace_back(m.x, m.y, m.z);
+            }
+            QMetaObject::invokeMethod(this, [this, pts]() {
+                if (m_3dView) m_3dView->loadPointCloud(pts);
+            });
+        }
+    }
+
+    QMetaObject::invokeMethod(this, [this]() {
+        statusBar()->showMessage(QStringLiteral("扫描完成"));
+    });
+}
+
 void MainWindow::closeEvent(QCloseEvent *event)
 {
+    spdlog::info("[MainWindow] 正在关闭...");
+
+    // 1. 停止扫描线程
+    m_scanning = false;
+    if (m_scanThread.joinable()) m_scanThread.join();
+    spdlog::info("[MainWindow] 扫描线程已停止");
+
+    // 2. 销毁扫描流水线
+    m_scanPipeline.reset();
+
+    // 3. 关闭相机（停止采集 + 关闭设备）
+    if (m_appCtx && m_appCtx->camera()) {
+        auto* cam = m_appCtx->camera();
+        if (cam->isCapturing()) {
+            cam->stopCapture();
+            spdlog::info("[MainWindow] 相机采集已停止");
+        }
+        if (cam->isOpen()) {
+            cam->close();
+            spdlog::info("[MainWindow] 相机已关闭");
+        }
+    }
+
+    // 4. 断开串口（关补光灯/激光 + 关闭）
+    if (m_appCtx && m_appCtx->scannerSerial()) {
+        auto* serial = m_appCtx->scannerSerial();
+        if (serial->isOpen()) {
+            serial->send("N11 H0;");  // 停止扫描
+            serial->send("N14 B0;");  // 补光灯关
+            serial->send("N13 L0;");  // 激光关
+            serial->close();
+            spdlog::info("[MainWindow] 串口已断开");
+        }
+    }
+
+    // 5. 关闭子窗口
     if (m_floatingToolbar) {
         m_floatingToolbar->close();
         delete m_floatingToolbar;
@@ -746,6 +996,13 @@ void MainWindow::closeEvent(QCloseEvent *event)
         delete m_calibDialog;
         m_calibDialog = nullptr;
     }
+
+    // 6. AppContext 清理（关闭硬件监控等）
+    if (m_appCtx) {
+        m_appCtx->shutdown();
+    }
+
+    spdlog::info("[MainWindow] 关闭完成");
     QMainWindow::closeEvent(event);
 }
 
@@ -1180,29 +1437,26 @@ QWidget *MainWindow::createToolBar()
             });
         }
 
-        // 标点扫描/面片扫描/点云扫描/双扫描/切片扫描：切换回默认界面
-        // 注意：i==0 是"文件管理/导入"按钮，只开菜单，不能在这里 clearScene（否则导入后被清空）
-        if (i == 2 || i == 3 || i == 4 || i == 5) {
+        // 标点扫描 / 面片扫描 / 点云扫描：toggle 切换
+        if (i == 2) {
+            connect(btn, &QPushButton::clicked, this, [this, btn]() {
+                if (m_scanModeIdx == 2) { stopScan(); }
+                else { onScanMarkers(); }
+            });
+        } else if (i == 3) {
+            connect(btn, &QPushButton::clicked, this, [this, btn]() {
+                if (m_scanModeIdx == 3) { stopScan(); }
+                else { onScanMesh(); }
+            });
+        } else if (i == 4) {
+            connect(btn, &QPushButton::clicked, this, [this, btn]() {
+                if (m_scanModeIdx == 4) { stopScan(); }
+                else { onScanPointCloud(); }
+            });
+        } else if (i == 5) {
             connect(btn, &QPushButton::clicked, this, [this]() {
-                if (m_calibBoard2D) m_calibBoard2D->hide();
-                // 隐藏左右、前后彩条
-                auto* va = m_3dView ? m_3dView->parentWidget()->parentWidget() : nullptr;
-                if (va) { auto* b = va->findChild<QWidget*>("calibLrBar"); if (b) b->hide(); }
-                auto* vc = m_3dView ? m_3dView->parentWidget() : nullptr;
-                if (vc) { auto* b = vc->findChild<QWidget*>("calibFbBar"); if (b) b->hide(); }
-                if (m_3dView) {
-                    m_3dView->clearScene();
-                    m_3dView->setCenterOverlayVisible(true);
-                    m_3dView->viewer()->getCamera()->setClearColor(osg::Vec4(0.412f, 0.412f, 0.412f, 1.0f));
-                    auto* manip = new osgGA::TrackballManipulator();
-                    m_3dView->setCameraManipulator(manip);
-                    manip->home(0);
-                }
-                if (m_floatingToolbar) {
-                    m_floatingToolbar->setVisible(true);
-                    m_floatingToolbar->show();
-                    repositionFloatingToolbar();
-                }
+                if (m_scanModeIdx == 5) { stopScan(); }
+                else { onScanMesh(); m_scanModeIdx = 5; }
             });
         }
 

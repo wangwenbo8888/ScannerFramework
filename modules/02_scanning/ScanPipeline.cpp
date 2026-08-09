@@ -93,53 +93,69 @@ bool ScanPipeline::initialize() {
     }
 
     try {
-        // 预处理
-        maskSep_ = std::make_unique<calib::LaserMarkingSeparationCUDA>();
-        ccl_     = std::make_unique<calib::RegionAnalyzerCUDA>();
-
-        // 标记点链
-        imgSplit_        = std::make_unique<calib::ImageSplitCPU>();
-        zernike_         = std::make_unique<calib::ZernikeEdgeCPU>();
-        imgMerge_        = std::make_unique<calib::ImageMergeCPU>();
-        undistortCpu_    = std::make_unique<calib::MarkerUndistortCPU>();
-        ellipseFit_      = std::make_unique<calib::EllipseFitCPU>();
-        markerMatch_     = std::make_unique<calib::MarkerMatchCPU>();
-        epipolarIntersect_ = std::make_unique<calib::EpipolarIntersectCPU>();
-        edgeMatch_       = std::make_unique<calib::EdgeMatchCPU>();
-        pointReconstruct_ = std::make_unique<calib::PointReconstructCPU>();
-
-        // 配准
-        opticalFlow_ = std::make_unique<calib::MarkerOpticalFlowFuseCPU>();
-        frameFuse_   = std::make_unique<calib::FrameFuseCPU>();
-
-        // 激光链（仅 enableLaser 时创建）
-        if (config_.enableLaser) {
-            steger_         = std::make_unique<calib::StegerExtractorCUDA>();
-            undistortCuda_  = std::make_unique<calib::UndistortPointsCuda>();
-            epipolarInterp_ = std::make_unique<calib::EpipolarInterpCuda>();
-            laserMatch_     = std::make_unique<calib::LaserMatchScanCuda>();
-            laserReconstruct_ = std::make_unique<calib::LaserReconstructCuda>();
+        // 预处理 (CUDA — 失败不致命，有 OpenCV 回退)
+        try {
+            maskSep_ = std::make_unique<calib::LaserMarkingSeparationCUDA>();
+            spdlog::info("[ScanPipeline] mask_separation OK");
+        } catch (const std::exception& e) {
+            spdlog::warn("[ScanPipeline] mask_separation 失败(OpenCV回退): {}", e.what());
+        }
+        try {
+            ccl_ = std::make_unique<calib::RegionAnalyzerCUDA>();
+            spdlog::info("[ScanPipeline] ccl OK");
+        } catch (const std::exception& e) {
+            spdlog::warn("[ScanPipeline] ccl 失败(OpenCV回退): {}", e.what());
         }
 
-        // 融合
+        // 标记点链 (CPU — 必须成功)
+        zernike_ = std::make_unique<calib::ZernikeEdgeCPU>();
+        ellipseFit_ = std::make_unique<calib::EllipseFitCPU>();
+        markerMatch_ = std::make_unique<calib::MarkerMatchCPU>();
+        pointReconstruct_ = std::make_unique<calib::PointReconstructCPU>();
+        spdlog::info("[ScanPipeline] 标记点链OK");
+
+        // 配准 (可选)
+        try {
+            opticalFlow_ = std::make_unique<calib::MarkerOpticalFlowFuseCPU>();
+            frameFuse_ = std::make_unique<calib::FrameFuseCPU>();
+            spdlog::info("[ScanPipeline] 配准OK");
+        } catch (const std::exception& e) {
+            spdlog::warn("[ScanPipeline] 配准失败: {}", e.what());
+        }
+
+        // 激光链 (CUDA — 可选)
+        if (config_.enableLaser) {
+            try {
+                steger_ = std::make_unique<calib::StegerExtractorCUDA>();
+                undistortCuda_ = std::make_unique<calib::UndistortPointsCuda>();
+                epipolarInterp_ = std::make_unique<calib::EpipolarInterpCuda>();
+                laserMatch_ = std::make_unique<calib::LaserMatchScanCuda>();
+                laserReconstruct_ = std::make_unique<calib::LaserReconstructCuda>();
+                spdlog::info("[ScanPipeline] 激光链OK");
+            } catch (const std::exception& e) {
+                spdlog::warn("[ScanPipeline] 激光链失败: {}", e.what());
+            }
+        }
+
+        // 融合 (CPU — 必须成功)
         calib::MarkerCloudFuseCPUParams markerFuseParams;
         markerFuseParams.voxelSize = config_.markerVoxelSize;
         markerFuse_ = std::make_unique<calib::MarkerCloudFuseCPU>(markerFuseParams);
-
         laserFuseCpu_ = std::make_unique<calib::LaserCloudFuseCPU>();
+        spdlog::info("[ScanPipeline] 融合OK");
 
+        // CUDA融合 (可选)
         if (config_.enableLaser) {
-            laserFuseCuda_ = std::make_unique<calib::LaserCloudFuseCuda>();
-            laserNormal_   = std::make_unique<calib::LaserCloudNormalCuda>();
+            try {
+                laserFuseCuda_ = std::make_unique<calib::LaserCloudFuseCuda>();
+                laserNormal_ = std::make_unique<calib::LaserCloudNormalCuda>();
+            } catch (const std::exception& e) {
+                spdlog::warn("[ScanPipeline] CUDA融合失败(CPU回退): {}", e.what());
+            }
         }
 
-        // 全局优化（BUILD_GLOBAL_OPTIM=ON 时可用）
-        // if (config_.enableFinalBA) {
-        //     globalBA_ = std::make_unique<calib::GlobalBundleAdjustmentCPU>();
-        // }
-
         // 情况C: 预填充导入标记点
-        if (!config_.initialGlobalMarkers.empty()) {
+        if (!config_.initialGlobalMarkers.empty() && markerFuse_) {
             markerFuse_->Seed(config_.initialGlobalMarkers);
             spdlog::info("[ScanPipeline] 导入 {} 个已知标记点", config_.initialGlobalMarkers.size());
         }

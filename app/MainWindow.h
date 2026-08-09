@@ -12,6 +12,9 @@
 #include <QPaintEvent>
 #include <QSvgRenderer>
 #include <opencv2/core.hpp>
+#include <memory>
+#include <thread>
+#include <atomic>
 
 #include "OSGWidget.h"
 
@@ -34,6 +37,7 @@ class CameraControl;
 class LEADSCANSeries;
 class AppContext;
 namespace calib_display { class CalibBoard2D; }
+namespace Scanner { namespace workflow { class ScanPipeline; struct ScanConfig; } }
 
 class MainWindow : public QMainWindow
 {
@@ -77,6 +81,10 @@ private slots:
     void onReloadPointCloud();
     void onCalibDeviceClicked();
     void onScanClicked();
+    void onScanMarkers();     // 标点扫描 (情况A)
+    void onScanMesh();        // 面片扫描 (情况B)
+    void onScanPointCloud();  // 点云扫描 (情况C)
+    void onStopScan();        // 停止扫描
 
 protected:
     bool eventFilter(QObject *obj, QEvent *event) override;
@@ -113,6 +121,15 @@ protected:
         bool hasTempTables = false;
     } m_lastCameraCalib;
     LEADSCANSeries *m_series = nullptr;
+
+    // 扫描流水线
+    std::unique_ptr<Scanner::workflow::ScanPipeline> m_scanPipeline;
+    std::thread m_scanThread;
+    std::atomic<bool> m_scanning{false};
+    int m_scanModeIdx = -1;  // -1=未扫描, 2=标点, 3=面片, 4=点云
+    void startScanWithConfig(const Scanner::workflow::ScanConfig& config, int modeIdx);
+    void scanLoop();
+    void stopScan();
 
     // 系统信息面板
     QTimer *m_infoTimer = nullptr;
