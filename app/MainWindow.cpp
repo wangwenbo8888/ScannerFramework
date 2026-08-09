@@ -10,6 +10,7 @@
 #include "stubs/LEADSCANSeries.h"
 #include "stubs/CameraControl.h"
 #include "stubs/scan_workflow.h"
+#include "MCUDriver.h"
 #include "file_io.h"
 #include <osg/Vec3>
 #include <osg/Matrix>
@@ -23,6 +24,7 @@
 #include <QScreen>
 #include <QResizeEvent>
 #include <QTimer>
+#include <QThread>
 #include <QScrollArea>
 #include <QShortcut>
 #include <QMessageBox>
@@ -312,121 +314,252 @@ void MainWindow::onCalibDeviceClicked()
     statusBar()->showMessage(QStringLiteral("标定开始：请移动设备采集25个姿态..."));
     QApplication::processEvents();
 
-    // 构建标定配置
-    calibration::CalibSessionConfig config;
-    config.imageWidth = 2048;
-    config.imageHeight = 1536;
-    config.chessboardCols = calibration::CHESSBOARD_COLS;
-    config.chessboardRows = calibration::CHESSBOARD_ROWS;
-    config.squareSizeMm = calibration::CHESSBOARD_SQUARE_MM;
-    config.cte = 23.6e-6;
-    config.referenceTemp = 25.0;
-    config.initialTx = 80.0;
-    config.initialTy = 3.0;
-    config.initialTz = 3.0;
+    auto* mcu = m_appCtx ? m_appCtx->mcu() : nullptr;
 
-    // 25 个目标姿态（简化：均匀网格）
-    for (int i = 0; i < 25; ++i) {
-        calibration::CalibSessionConfig::PoseTarget t;
-        t.name = "Pose_" + std::to_string(i + 1);
-        t.tx = 0; t.ty = 0; t.tz = 0;
-        t.rx = 0; t.ry = 0; t.rz = 0;
-        t.posThreshold = 15.0;
-        t.rotThreshold = 8.0;
-        config.poseTargets.push_back(t);
-    }
-
-    // 帧提供者：从相机采集
-    int frameTimeoutMs = 5000;
-    auto getNextFrame = [this, cam, frameTimeoutMs](calibration::CalibFrameInput& frame) -> bool {
-        Scanner::hal::StereoFrame sf;
-        auto r = cam->grabFrame(sf, frameTimeoutMs);
-        if (!r.success || sf.leftGray.empty()) return false;
-        frame.leftMarkerGray = sf.leftGray;
-        frame.rightMarkerGray = sf.rightGray;
-        frame.temperature = cam->getTemperature();
-        return true;
+    // ===== 逐姿态采集（25个姿态 × 每姿态5帧）=====
+    struct CollectedPose {
+        cv::Mat markerL, markerR;           // 标志点帧
+        cv::Mat laserL[4], laserR[4];       // 4种激光管帧（左斜/右斜/细节/深空）
+        double temperature = 25.0;
     };
+    std::vector<CollectedPose> collectedPoses;
+    collectedPoses.reserve(25);
 
-    // 进度回调
-    auto onProgress = [this](const calibration::CalibSessionState& state) {
-        statusBar()->showMessage(QString::fromStdString(state.currentStep) +
-            QStringLiteral(" | 已采集: %1/%2 | 帧数: %3")
-            .arg(state.collectedPoses)
-            .arg(state.targetPoseCount)
-            .arg(state.frameCount));
+    const int totalPoses = 25;
+    const char* laserNames[] = {"左斜激光", "右斜激光", "细节", "深空"};
+
+    for (int poseIdx = 0; poseIdx < totalPoses; ++poseIdx) {
+        // 显示当前目标姿态
+        statusBar()->showMessage(QStringLiteral("姿态 %1/%2：请将设备移动到目标姿态...")
+            .arg(poseIdx + 1).arg(totalPoses));
         QApplication::processEvents();
-    };
 
-    // 执行完整标定
-    auto result = calibration::runFullCalibration(config, getNextFrame, onProgress);
+        // 等待姿态匹配（持续采帧 + 棋盘格检测）
+        bool poseMatched = false;
+        int waitFrameCount = 0;
+        int consecutiveMatch = 0;
+        cv::Size patternSize(calibration::CHESSBOARD_COLS, calibration::CHESSBOARD_ROWS);
+
+        while (!poseMatched) {
+            QApplication::processEvents();
+            Scanner::hal::StereoFrame sf;
+            if (!cam->grabFrame(sf, 3000).success || sf.leftGray.empty()) {
+                waitFrameCount++;
+                if (waitFrameCount > 100) break;  // 超时保护
+                continue;
+            }
+
+            // 检测棋盘格角点确认姿态（简化：连续3帧检测到棋盘格=姿态稳定）
+            std::vector<cv::Point2f> cornersL, cornersR;
+            bool foundL = cv::findChessboardCorners(sf.leftGray, patternSize, cornersL,
+                cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE);
+            bool foundR = cv::findChessboardCorners(sf.rightGray, patternSize, cornersR,
+                cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE);
+
+            if (foundL && foundR) {
+                consecutiveMatch++;
+                statusBar()->showMessage(QStringLiteral("姿态 %1/%2：检测到棋盘格 (%3/3)...")
+                    .arg(poseIdx + 1).arg(totalPoses).arg(consecutiveMatch));
+                QApplication::processEvents();
+                if (consecutiveMatch >= 3) {
+                    poseMatched = true;
+                }
+            } else {
+                consecutiveMatch = 0;
+            }
+            waitFrameCount++;
+        }
+
+        if (!poseMatched) {
+            auto ret = QMessageBox::question(this, QStringLiteral("姿态采集"),
+                QStringLiteral("姿态 %1 未检测到棋盘格，跳过此姿态？").arg(poseIdx + 1),
+                QMessageBox::Yes | QMessageBox::Abort);
+            if (ret == QMessageBox::Abort) break;
+            continue;
+        }
+
+        // ===== 姿态匹配，采集5帧 =====
+        CollectedPose cp;
+        cp.temperature = cam->getTemperature();
+
+        // 帧1：标志点（补光灯ON，激光OFF）
+        statusBar()->showMessage(QStringLiteral("姿态 %1：采集标志点帧...").arg(poseIdx + 1));
+        QApplication::processEvents();
+        if (mcu) { mcu->setLedOn(true); mcu->setLaserOn(false); }
+        QThread::msleep(100);
+        {
+            Scanner::hal::StereoFrame sf;
+            if (cam->grabFrame(sf, 5000).success) {
+                cp.markerL = sf.leftGray.clone();
+                cp.markerR = sf.rightGray.clone();
+            }
+        }
+
+        // 帧2-5：4种激光管（补光灯OFF，对应激光管ON）
+        for (int laserIdx = 0; laserIdx < 4; ++laserIdx) {
+            statusBar()->showMessage(QStringLiteral("姿态 %1：采集%2帧...")
+                .arg(poseIdx + 1).arg(QString::fromUtf8(laserNames[laserIdx])));
+            QApplication::processEvents();
+            if (mcu) { mcu->setLedOn(false); mcu->setLaserOn(true); mcu->setLaserPower(60 + laserIdx * 20); }
+            QThread::msleep(100);
+            Scanner::hal::StereoFrame sf;
+            if (cam->grabFrame(sf, 5000).success) {
+                cp.laserL[laserIdx] = sf.leftGray.clone();
+                cp.laserR[laserIdx] = sf.rightGray.clone();
+            }
+        }
+
+        // 恢复硬件状态
+        if (mcu) { mcu->setLaserOn(false); mcu->setLedOn(false); }
+
+        collectedPoses.push_back(std::move(cp));
+        statusBar()->showMessage(QStringLiteral("姿态 %1/%2 采集完成（%3 帧激光）")
+            .arg(poseIdx + 1).arg(totalPoses).arg(4));
+        QApplication::processEvents();
+    }
 
     // 停止采集
     cam->stopCapture();
 
-    if (!result.success) {
-        QMessageBox::warning(this, QStringLiteral("标定失败"), QString::fromStdString(result.message));
-        statusBar()->showMessage(QStringLiteral("标定失败: %1").arg(QString::fromStdString(result.message)));
+    if (collectedPoses.size() < 5) {
+        QMessageBox::warning(this, QStringLiteral("标定失败"),
+            QStringLiteral("采集姿态数不足: %1").arg(collectedPoses.size()));
         return;
     }
 
-    // 保存结果
-    calibration::saveCalibResult("calibration.json", result.cameraCalib);
-    if (result.laserCalib.success)
-        calibration::saveLaserCalibResult("laser_calib.json", result.laserCalib);
+    // ===== 阶段3：相机标定（内参→外参→立体矫正→温度补偿表）=====
+    statusBar()->showMessage(QStringLiteral("正在执行相机标定..."));
+    QApplication::processEvents();
 
-    // 存到成员（供后续扫描使用）
+    calibration::CameraCalibInput camInput;
+    camInput.imageWidth = 2048;
+    camInput.imageHeight = 1536;
+    camInput.cte = 23.6e-6;
+    camInput.referenceTemp = 25.0;
+    camInput.tempStep = 2.0;
+    camInput.tempRangeMin = -10.0;
+    camInput.tempRangeMax = 10.0;
+
+    cv::Size patternSize(calibration::CHESSBOARD_COLS, calibration::CHESSBOARD_ROWS);
+    for (const auto& cp : collectedPoses) {
+        if (cp.markerL.empty()) continue;
+        std::vector<cv::Point2f> cornersL, cornersR;
+        if (cv::findChessboardCorners(cp.markerL, patternSize, cornersL,
+            cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE) &&
+            cv::findChessboardCorners(cp.markerR, patternSize, cornersR,
+            cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE))
+        {
+            cv::cornerSubPix(cp.markerL, cornersL, cv::Size(5, 5), cv::Size(-1, -1),
+                cv::TermCriteria(cv::TermCriteria::EPS | cv::TermCriteria::COUNT, 30, 0.01));
+            cv::cornerSubPix(cp.markerR, cornersR, cv::Size(5, 5), cv::Size(-1, -1),
+                cv::TermCriteria(cv::TermCriteria::EPS | cv::TermCriteria::COUNT, 30, 0.01));
+            camInput.leftCorners.push_back(cornersL);
+            camInput.rightCorners.push_back(cornersR);
+        }
+    }
+
+    auto camResult = calibration::runCameraCalibration(camInput,
+        [this](int pct, const std::string& step) {
+            statusBar()->showMessage(QString::fromStdString(step) + " (" + QString::number(pct) + "%)");
+            QApplication::processEvents();
+        });
+
+    if (!camResult.success) {
+        QMessageBox::warning(this, QStringLiteral("标定失败"),
+            QStringLiteral("相机标定失败: %1").arg(QString::fromStdString(camResult.message)));
+        return;
+    }
+    calibration::saveCalibResult("calibration.json", camResult);
+
+    // ===== 阶段4：激光器标定 =====
+    statusBar()->showMessage(QStringLiteral("正在执行激光器标定..."));
+    QApplication::processEvents();
+
+    calibration::LaserCalibInput laserInput;
+    laserInput.cameraCalib = &camResult;
+    laserInput.initialTx = 80.0;
+    laserInput.initialTy = 3.0;
+    laserInput.initialTz = 3.0;
+    laserInput.cte = 23.6e-6;
+    laserInput.referenceTemp = 25.0;
+
+    for (const auto& cp : collectedPoses) {
+        // 每种激光管帧作为独立姿态输入
+        for (int li = 0; li < 4; ++li) {
+            if (!cp.laserL[li].empty() && !cp.laserR[li].empty()) {
+                calibration::LaserPoseImages lpi;
+                lpi.leftLaserGray = cp.laserL[li];
+                lpi.rightLaserGray = cp.laserR[li];
+                lpi.temperature = cp.temperature;
+                laserInput.poses.push_back(std::move(lpi));
+            }
+        }
+    }
+
+    auto laserResult = calibration::runLaserCalibration(laserInput,
+        [this](int pct, const std::string& step) {
+            statusBar()->showMessage(QString::fromStdString(step) + " (" + QString::number(pct) + "%)");
+            QApplication::processEvents();
+        });
+
+    if (laserResult.success)
+        calibration::saveLaserCalibResult("laser_calib.json", laserResult);
+
+    // 存到成员
     m_lastCameraCalib.success = true;
-    m_lastCameraCalib.cameraMatrixL = result.cameraCalib.cameraMatrixL;
-    m_lastCameraCalib.distCoeffsL = result.cameraCalib.distCoeffsL;
-    m_lastCameraCalib.cameraMatrixR = result.cameraCalib.cameraMatrixR;
-    m_lastCameraCalib.distCoeffsR = result.cameraCalib.distCoeffsR;
-    m_lastCameraCalib.R = result.cameraCalib.R;
-    m_lastCameraCalib.T = result.cameraCalib.T;
-    m_lastCameraCalib.R1 = result.cameraCalib.R1;
-    m_lastCameraCalib.R2 = result.cameraCalib.R2;
-    m_lastCameraCalib.P1 = result.cameraCalib.P1;
-    m_lastCameraCalib.P2 = result.cameraCalib.P2;
-    m_lastCameraCalib.Q = result.cameraCalib.Q;
+    m_lastCameraCalib.cameraMatrixL = camResult.cameraMatrixL;
+    m_lastCameraCalib.distCoeffsL = camResult.distCoeffsL;
+    m_lastCameraCalib.cameraMatrixR = camResult.cameraMatrixR;
+    m_lastCameraCalib.distCoeffsR = camResult.distCoeffsR;
+    m_lastCameraCalib.R = camResult.R;
+    m_lastCameraCalib.T = camResult.T;
+    m_lastCameraCalib.R1 = camResult.R1;
+    m_lastCameraCalib.R2 = camResult.R2;
+    m_lastCameraCalib.P1 = camResult.P1;
+    m_lastCameraCalib.P2 = camResult.P2;
+    m_lastCameraCalib.Q = camResult.Q;
+    m_lastCameraCalib.intrinsicRMS = camResult.intrinsicRMS;
+    m_lastCameraCalib.stereoReprojError = camResult.stereoReprojError;
+    m_lastCameraCalib.hasTempTables = camResult.hasTempTables;
 
-    // 汇总标定误差
+    // ===== 汇总标定误差 =====
     QString summary = QStringLiteral(
         "====== 标定完成 ======\n\n"
         "【采集统计】\n"
         "  目标姿态数: %1\n"
         "  已采集姿态: %2\n"
-        "  总帧数: %3\n\n"
-        "【相机标定误差】\n"
+        "  激光帧数: %3\n\n"
+        "【相机标定】\n"
         "  内参 RMS: %4 px\n"
         "  立体重投影误差: %5 px\n"
         "  有效帧数: %6\n"
         "  温度补偿表: %7\n\n")
-        .arg(result.session.targetPoseCount)
-        .arg(result.session.collectedPoses)
-        .arg(result.session.frameCount)
-        .arg(result.cameraCalib.intrinsicRMS, 0, 'f', 4)
-        .arg(result.cameraCalib.stereoReprojError, 0, 'f', 4)
-        .arg(result.cameraCalib.validFrameCount)
-        .arg(result.cameraCalib.hasTempTables ? QStringLiteral("已生成") : QStringLiteral("未生成"));
+        .arg(totalPoses)
+        .arg(collectedPoses.size())
+        .arg(laserInput.poses.size())
+        .arg(camResult.intrinsicRMS, 0, 'f', 4)
+        .arg(camResult.stereoReprojError, 0, 'f', 4)
+        .arg(camResult.validFrameCount)
+        .arg(camResult.hasTempTables ? QStringLiteral("已生成") : QStringLiteral("未生成"));
 
-    if (result.laserCalib.success) {
+    if (laserResult.success) {
         summary += QStringLiteral(
-            "【激光标定结果】\n"
+            "【激光器标定】\n"
             "  投影机光心 T: (%1, %2, %3) mm\n"
             "  最终 RMS: %4\n"
             "  优化改善率: %5\n"
             "  姿态数: %6\n"
             "  总点数: %7\n")
-            .arg(result.laserCalib.projectorT[0], 0, 'f', 2)
-            .arg(result.laserCalib.projectorT[1], 0, 'f', 2)
-            .arg(result.laserCalib.projectorT[2], 0, 'f', 2)
-            .arg(result.laserCalib.finalRms, 0, 'f', 4)
-            .arg(result.laserCalib.improvementRatio, 0, 'f', 2)
-            .arg(result.laserCalib.poseCount)
-            .arg(result.laserCalib.totalPointCount);
+            .arg(laserResult.projectorT[0], 0, 'f', 2)
+            .arg(laserResult.projectorT[1], 0, 'f', 2)
+            .arg(laserResult.projectorT[2], 0, 'f', 2)
+            .arg(laserResult.finalRms, 0, 'f', 4)
+            .arg(laserResult.improvementRatio, 0, 'f', 2)
+            .arg(laserResult.poseCount)
+            .arg(laserResult.totalPointCount);
     } else {
-        summary += QStringLiteral("\n【激光标定】跳过或失败: %1\n")
-            .arg(QString::fromStdString(result.laserCalib.message));
+        summary += QStringLiteral("\n【激光器标定】失败: %1\n")
+            .arg(QString::fromStdString(laserResult.message));
     }
 
     summary += QStringLiteral("\n标定参数已保存: calibration.json / laser_calib.json");
