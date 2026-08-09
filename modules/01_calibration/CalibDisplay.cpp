@@ -20,6 +20,7 @@
 #include <osg/BoundingSphere>
 #include <osg/CopyOp>
 #include <osg/LightModel>
+#include <osg/BlendFunc>
 #include <osgText/Text>
 #include <osgDB/ReadFile>
 #include <osgDB/Registry>
@@ -249,11 +250,16 @@ static osg::Geode* loadStlManual(const std::string& path)
     lightModel->setTwoSided(true);  // 双面光照：翻转绕序后内表面法线朝里，需要twoSided才亮
     ss->setAttributeAndModes(lightModel.get());
     osg::ref_ptr<osg::Material> mat = new osg::Material;
-    mat->setDiffuse(osg::Material::FRONT_AND_BACK, osg::Vec4(0.75f, 0.75f, 0.75f, 1.0f));
-    mat->setAmbient(osg::Material::FRONT_AND_BACK, osg::Vec4(0.75f, 0.75f, 0.75f, 1.0f));
-    mat->setSpecular(osg::Material::FRONT_AND_BACK, osg::Vec4(0.3f, 0.3f, 0.3f, 1.0f));
+    mat->setDiffuse(osg::Material::FRONT_AND_BACK, osg::Vec4(0.75f, 0.75f, 0.75f, 0.3f));
+    mat->setAmbient(osg::Material::FRONT_AND_BACK, osg::Vec4(0.75f, 0.75f, 0.75f, 0.3f));
+    mat->setSpecular(osg::Material::FRONT_AND_BACK, osg::Vec4(0.3f, 0.3f, 0.3f, 0.3f));
     mat->setShininess(osg::Material::FRONT_AND_BACK, 100.0f);
     ss->setAttributeAndModes(mat.get(), osg::StateAttribute::ON);
+    ss->setMode(GL_BLEND, osg::StateAttribute::ON);
+    osg::ref_ptr<osg::BlendFunc> blendFunc = new osg::BlendFunc;
+    blendFunc->setFunction(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    ss->setAttributeAndModes(blendFunc);
+    ss->setRenderingHint(osg::StateSet::TRANSPARENT_BIN);
 
     osg::ref_ptr<osg::Geode> geode = new osg::Geode;
     geode->addDrawable(geom);
@@ -288,10 +294,8 @@ static osg::MatrixTransform* createPoseModel(const std::string& stlPath,
     xform->addChild(child);
 
     osg::StateSet* ss = xform->getOrCreateStateSet();
-    ss->setMode(GL_CULL_FACE, osg::StateAttribute::OFF);     // 不剔除，靠深度缓冲遮挡
-    ss->setMode(GL_DEPTH_TEST, osg::StateAttribute::ON);     // 显式开启深度测试
-    ss->setMode(GL_BLEND, osg::StateAttribute::OFF);        // 不透明
-    ss->setRenderingHint(osg::StateSet::OPAQUE_BIN);
+    ss->setMode(GL_CULL_FACE, osg::StateAttribute::OFF);
+    ss->setMode(GL_DEPTH_TEST, osg::StateAttribute::ON);
     return xform;
 }
 
