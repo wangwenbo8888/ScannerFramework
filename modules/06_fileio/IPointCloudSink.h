@@ -3,7 +3,7 @@
 // IPointCloudSink.h — 点云 Sink（Data 层拥有）
 // ============================================================================
 
-#include "common/types.h"
+#include "app/types.h"
 #include <opencv2/core.hpp>
 #include <vector>
 

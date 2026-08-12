@@ -5,7 +5,7 @@
 // 依赖倒置：HAL 产出帧数据推给 Sink，不反向依赖 Data 实现。
 // ============================================================================
 
-#include "common/types.h"
+#include "app/types.h"
 #include <opencv2/core.hpp>
 
 namespace Scanner::data {

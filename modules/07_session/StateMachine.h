@@ -3,8 +3,8 @@
 // StateMachine.h — 系统状态机实现（Service 层）
 // ============================================================================
 
-#include "service/IState.h"
-#include "modules/07_session/EventBus.h"
+#include "IState.h"
+#include "EventBus.h"
 #include <atomic>
 #include <mutex>
 #include <functional>

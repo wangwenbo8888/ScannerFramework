@@ -1,10 +1,11 @@
+#include "modules/07_session/EventTypes.h"
 #include "ScannerWindow.h"
 #include "AppContext.h"
-#include "workflow/IWorkflow.h"
+#include "app/IWorkflow.h"
 #include "ScanWorkflow.h"
 #include "CalibrationWorkflow.h"
 #include "modules/08_devicemgmt/HardwareMonitor.h"
-#include "service/StateMachine.h"
+#include "modules/07_session/StateMachine.h"
 
 #include <opencv2/imgproc.hpp>
 #include <spdlog/spdlog.h>

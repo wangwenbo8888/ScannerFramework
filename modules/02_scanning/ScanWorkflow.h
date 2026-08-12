@@ -14,11 +14,12 @@
 //   Stage3: steger→undistort→epipolar_interp→laser_match→laser_reconstruct
 // ============================================================================
 
-#include "workflow/IWorkflow.h"
-#include "workflow/Pipeline.h"
-#include "workflow/WorkflowContext.h"
-#include "data/IFrameSink.h"
-#include "common/types.h"
+#include "app/IWorkflow.h"
+#include "app/Pipeline.h"
+#include "app/WorkflowContext.h"
+#include "ScanConfig.h"
+#include "modules/08_devicemgmt/FrameBuffer.h"
+#include "app/types.h"
 #include <opencv2/core.hpp>
 #include <memory>
 #include <atomic>
@@ -30,16 +31,7 @@ namespace calib { class ZernikeEdgeCPU; class EllipseFitCPU; class MarkerMatchCP
 
 namespace Scanner::workflow {
 
-// ============================================================================
-// ScanCalibration — 扫描所需的标定参数（由 CalibrationWorkflow 产出）
-// ============================================================================
-struct ScanCalibration {
-    cv::Mat cameraMatrixL, distCoeffsL;
-    cv::Mat cameraMatrixR, distCoeffsR;
-    cv::Mat R1, R2, P1, P2, Q;
-    cv::Size imageSize;
-    bool valid = false;
-};
+// ScanCalibration 已移至 ScanConfig.h
 
 // ============================================================================
 // ScanFrameResult — 单帧处理结果

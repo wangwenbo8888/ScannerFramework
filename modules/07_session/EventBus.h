@@ -1,3 +1,4 @@
+#include "EventTypes.h"
 #pragma once
 // ============================================================================
 // EventBus.h — 事件总线（infra 层）
@@ -6,7 +7,7 @@
 // Critical 通道用 publishSync（急停硬实时）。
 // ============================================================================
 
-#include "common/types.h"
+#include "app/types.h"
 #include <functional>
 #include <vector>
 #include <mutex>

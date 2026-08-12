@@ -1,9 +1,11 @@
+#include "DeviceTypes.h"
+#include "EventTypes.h"
 // ============================================================================
 // HardwareMonitor.cpp — 硬件状态监控实现
 // ============================================================================
 
 #include "HardwareMonitor.h"
-#include "data/DeviceStateCache.h"
+#include "modules/08_devicemgmt/DeviceStateCache.h"
 #include "EventBus.h"
 #include "IMCU.h"
 #include "IScannerCamera.h"

@@ -5,8 +5,8 @@
 // 25姿态采集 → 标记点提取 → 相机标定 → 立体矫正 → 激光平面标定 → 温度补偿表
 // ============================================================================
 
-#include "workflow/IWorkflow.h"
-#include "workflow/WorkflowContext.h"
+#include "app/IWorkflow.h"
+#include "app/WorkflowContext.h"
 #include <memory>
 #include <atomic>
 #include <thread>

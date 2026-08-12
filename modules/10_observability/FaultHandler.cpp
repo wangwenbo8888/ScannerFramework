@@ -1,5 +1,5 @@
 #include "FaultHandler.h"
-#include "service/StateMachine.h"
+#include "modules/07_session/StateMachine.h"
 #include "modules/07_session/EventBus.h"
 #include <spdlog/spdlog.h>
 

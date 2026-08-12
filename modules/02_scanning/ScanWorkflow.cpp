@@ -1,3 +1,4 @@
+#include "modules/07_session/EventTypes.h"
 // ============================================================================
 // ScanWorkflow.cpp — 扫描工作流实现（CPU 标记点链 + 体素融合）
 //
@@ -7,8 +8,8 @@
 
 #include "ScanWorkflow.h"
 #include "modules/08_devicemgmt/FrameBuffer.h"
-#include "data/PointCloudBuffer.h"
-#include "service/SessionService.h"
+#include "modules/06_fileio/PointCloudBuffer.h"
+#include "modules/07_session/SessionService.h"
 
 #include <opencv2/imgproc.hpp>
 #include <opencv2/calib3d.hpp>

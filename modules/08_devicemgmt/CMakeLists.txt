@@ -8,6 +8,7 @@ add_library(mod_devicemgmt STATIC
     HardwareMonitor.cpp
     ScannerSerialPort.cpp
     FrameBuffer.cpp
+    DeviceStateCache.cpp
 )
 
 target_include_directories(mod_devicemgmt
@@ -15,16 +16,10 @@ target_include_directories(mod_devicemgmt
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${GALAXY_SDK_DIR}/inc
         ${CMAKE_SOURCE_DIR}
-    PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
 target_link_libraries(mod_devicemgmt
     PUBLIC
-        fw_hal
-        fw_data
-        fw_infra
-        fw_common
         mod_session
         ${OpenCV_LIBS}
         spdlog::spdlog

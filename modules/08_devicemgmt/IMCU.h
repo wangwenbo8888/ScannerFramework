@@ -5,7 +5,7 @@
 // 控制节点：同步触发、按键、温度、急停硬线。
 // ============================================================================
 
-#include "common/types.h"
+#include "app/types.h"
 #include <functional>
 
 namespace Scanner::hal {

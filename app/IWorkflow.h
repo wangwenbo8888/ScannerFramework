@@ -6,7 +6,7 @@
 // 生命周期由 Service（会话/状态机）编排。
 // ============================================================================
 
-#include "common/types.h"
+#include "app/types.h"
 #include <string>
 
 namespace Scanner::workflow {

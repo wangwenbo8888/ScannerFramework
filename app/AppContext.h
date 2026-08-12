@@ -7,7 +7,7 @@
 // 运行期由 app/main 装配，生命周期 = 整个应用。
 // ============================================================================
 
-#include "common/types.h"
+#include "app/types.h"
 #include <memory>
 
 namespace Scanner::data    { class FrameBuffer; class PointCloudBuffer; class DeviceStateCache; class CalibStore; }

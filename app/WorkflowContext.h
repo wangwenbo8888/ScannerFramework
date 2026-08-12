@@ -1,3 +1,4 @@
+#include "modules/07_session/EventTypes.h"
 #pragma once
 // ============================================================================
 // WorkflowContext.h — 工作流统一依赖入口（Workflow 层）
@@ -6,7 +7,7 @@
 // ADR 7.7: Workflow 只依赖 WorkflowContext，不直接持有各层指针。
 // ============================================================================
 
-#include "common/types.h"
+#include "app/types.h"
 #include <string>
 #include <functional>
 

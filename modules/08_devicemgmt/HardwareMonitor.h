@@ -6,7 +6,7 @@
 // 纯读取，不做业务判断（如温度阈值）。
 // ============================================================================
 
-#include "common/types.h"
+#include "app/types.h"
 #include <atomic>
 #include <thread>
 #include <functional>

@@ -1,4 +1,4 @@
-#include "Pipeline.h"
+#include "app/Pipeline.h"
 #include <algorithm>
 
 namespace Scanner::workflow {

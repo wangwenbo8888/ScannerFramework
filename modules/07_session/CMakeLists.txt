@@ -1,6 +1,8 @@
-# Module 07_session — 会话管理（EventBus 事件总线）
+# Module 07_session — 会话管理（EventBus + 工作流框架 + 状态机）
 add_library(mod_session STATIC
     EventBus.cpp
+    StateMachine.cpp
+    SessionService.cpp
 )
 
 target_include_directories(mod_session
@@ -11,6 +13,6 @@ target_include_directories(mod_session
 
 target_link_libraries(mod_session
     PUBLIC
-        fw_common
         spdlog::spdlog
+        ${OpenCV_LIBS}
 )

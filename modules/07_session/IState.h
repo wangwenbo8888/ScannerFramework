@@ -1,3 +1,4 @@
+#include "EventTypes.h"
 #pragma once
 // ============================================================================
 // IState.h — 状态机接口（Service 层）
@@ -5,7 +6,7 @@
 // 扫描仪全局状态机：管理设备就绪→标定→扫描→后处理的状态流转。
 // ============================================================================
 
-#include "common/types.h"
+#include "app/types.h"
 #include <string>
 
 namespace Scanner::service {

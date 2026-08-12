@@ -3,7 +3,7 @@
 // ParameterManager.h — 参数集中管理（Service 层）
 // ============================================================================
 
-#include "common/types.h"
+#include "app/types.h"
 #include <mutex>
 #include <unordered_map>
 #include <string>

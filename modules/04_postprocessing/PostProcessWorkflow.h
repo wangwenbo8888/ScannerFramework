@@ -5,8 +5,8 @@
 // 全局标记点优化→重融合→法线→封装→补洞→光顺→边界优化→出STL
 // ============================================================================
 
-#include "workflow/IWorkflow.h"
-#include "workflow/WorkflowContext.h"
+#include "app/IWorkflow.h"
+#include "app/WorkflowContext.h"
 #include <memory>
 #include <atomic>
 #include <thread>

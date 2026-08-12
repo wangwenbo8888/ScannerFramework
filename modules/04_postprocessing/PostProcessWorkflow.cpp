@@ -1,5 +1,5 @@
 #include "PostProcessWorkflow.h"
-#include "data/PointCloudBuffer.h"
+#include "modules/06_fileio/PointCloudBuffer.h"
 #include <spdlog/spdlog.h>
 #include <chrono>
 

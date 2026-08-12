@@ -15,8 +15,8 @@
 // ============================================================================
 
 #include "ScanConfig.h"
-#include "data/IFrameSink.h"
-#include "common/types.h"
+#include "modules/08_devicemgmt/IFrameSink.h"
+#include "app/types.h"
 #include <opencv2/core.hpp>
 #include <opencv2/core/cuda.hpp>
 #include <memory>

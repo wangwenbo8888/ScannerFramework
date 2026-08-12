@@ -9,6 +9,11 @@ set(APP_SOURCES
     AppContext.h
     MainWindow.cpp
     MainWindow.h
+    Pipeline.cpp
+    Pipeline.h
+    WorkflowContext.cpp
+    WorkflowContext.h
+    IWorkflow.h
 )
 
 # === 模块文件（物理在 modules/ 下，编译进 scan_demo）===
@@ -21,6 +26,10 @@ set(MOD_CALIBRATION
     ${CMAKE_SOURCE_DIR}/modules/01_calibration/CalibDisplay.h
     ${CMAKE_SOURCE_DIR}/modules/01_calibration/IntegrateTestDialog.cpp
     ${CMAKE_SOURCE_DIR}/modules/01_calibration/IntegrateTestDialog.h
+    ${CMAKE_SOURCE_DIR}/modules/01_calibration/CalibrationWorkflow.cpp
+    ${CMAKE_SOURCE_DIR}/modules/01_calibration/CalibrationWorkflow.h
+    ${CMAKE_SOURCE_DIR}/modules/01_calibration/CalibStore.cpp
+    ${CMAKE_SOURCE_DIR}/modules/01_calibration/CalibStore.h
 )
 
 set(MOD_SCANNING
@@ -32,6 +41,11 @@ set(MOD_SCANNING
     ${CMAKE_SOURCE_DIR}/modules/02_scanning/ScanConfig.h
     ${CMAKE_SOURCE_DIR}/modules/02_scanning/ScanPipeline.cpp
     ${CMAKE_SOURCE_DIR}/modules/02_scanning/ScanPipeline.h
+)
+
+set(MOD_POSTPROCESSING
+    ${CMAKE_SOURCE_DIR}/modules/04_postprocessing/PostProcessWorkflow.cpp
+    ${CMAKE_SOURCE_DIR}/modules/04_postprocessing/PostProcessWorkflow.h
 )
 
 set(MOD_RENDERING
@@ -58,6 +72,7 @@ add_executable(scan_demo
     ${APP_SOURCES}
     ${MOD_CALIBRATION}
     ${MOD_SCANNING}
+    ${MOD_POSTPROCESSING}
     ${MOD_RENDERING}
     ${MOD_FILEIO}
     ${GENERATED_QRC_CPP}
@@ -75,12 +90,10 @@ target_include_directories(scan_demo PRIVATE
 )
 
 target_link_libraries(scan_demo PRIVATE
-    fw_common
-    fw_data
-    fw_infra
-    fw_workflow
     mod_devicemgmt
     mod_session
+    mod_fileio
+    mod_observability
     mod_operatorlib
     Qt5::Widgets
     Qt5::OpenGL

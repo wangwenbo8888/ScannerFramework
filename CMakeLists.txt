@@ -161,7 +161,7 @@ if(MSVC)
     add_compile_definitions($<$<CONFIG:Debug>:DEBUG>)
 endif()
 
-add_subdirectory(framework)
+# framework/ 已迁移到 modules/ 和 app/
 
 # ============================================================================
 # 模块
