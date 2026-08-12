@@ -199,11 +199,16 @@ bool ScanPipeline::initialize() {
 // 重置
 // ============================================================================
 void ScanPipeline::reset() {
-    if (markerFuse_) markerFuse_->Clear();
+    if (markerFuse_) {
+        markerFuse_->Clear();
+        // 重新预填充导入标记点（情况C）
+        if (!config_.initialGlobalMarkers.empty()) {
+            markerFuse_->Seed(config_.initialGlobalMarkers);
+        }
+    }
     if (laserFuseCpu_) laserFuseCpu_->Clear();
     isFirstFrame_ = true;
     prevState_ = {};
-    globalMarkers_ = {};
     frameCount_ = 0;
 }
 
@@ -711,19 +716,25 @@ const std::vector<calib::MarkerCloudPoint>& ScanPipeline::getFusedMarkers() cons
 }
 
 std::vector<cv::Point3f> ScanPipeline::getFusedLaserPoints() const {
-    // 从 CPU 融合获取（CUDA 融合需额外接口）
-    if (laserFuseCpu_) {
-        // TODO: LaserCloudFuseCPU 需暴露 GetFusedPoints()
-        return {};
+    if (!laserFuseCpu_) return {};
+    const auto& fused = laserFuseCpu_->GetFusedPoints();
+    std::vector<cv::Point3f> pts;
+    pts.reserve(fused.size());
+    for (const auto& p : fused) {
+        pts.emplace_back(p.x, p.y, p.z);
     }
-    return {};
+    return pts;
 }
 
 void ScanPipeline::notifyProgress(const std::string& status) {
     if (!callback_) return;
     ScanProgress p;
     p.frameCount = frameCount_;
-    p.fusedPointCount = markerFuse_ ? static_cast<int>(markerFuse_->GetFusedPointCount()) : 0;
+    p.markerCount = markerFuse_ ? static_cast<int>(markerFuse_->GetFusedPointCount()) : 0;
+    p.fusedPointCount = p.markerCount;
+    if (laserFuseCpu_) {
+        p.laserPointCount = static_cast<int>(laserFuseCpu_->GetFusedPointCount());
+    }
     p.status = status + " 标定=" + (calib_.valid ? "有" : "无");
     callback_(p);
 }

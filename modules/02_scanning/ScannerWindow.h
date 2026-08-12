@@ -12,7 +12,7 @@
 #include "ui_ScannerWindow.h"
 
 #include "modules/08_devicemgmt/CameraControl.h"
-#include "data/FrameBuffer.h"
+#include "FrameBuffer.h"
 
 class AppContext;
 

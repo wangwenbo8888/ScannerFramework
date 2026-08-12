@@ -3,7 +3,7 @@
 // ============================================================================
 
 #include "AppContext.h"
-#include "data/FrameBuffer.h"
+#include "modules/08_devicemgmt/FrameBuffer.h"
 #include "data/PointCloudBuffer.h"
 #include "data/DeviceStateCache.h"
 #include "data/CalibStore.h"
@@ -11,7 +11,7 @@
 #include "service/ParameterManager.h"
 #include "service/FaultHandler.h"
 #include "service/SessionService.h"
-#include "infra/EventBus.h"
+#include "modules/07_session/EventBus.h"
 #include "modules/08_devicemgmt/CameraControl.h"
 #include "modules/08_devicemgmt/MCUDriver.h"
 #include "modules/08_devicemgmt/HardwareMonitor.h"

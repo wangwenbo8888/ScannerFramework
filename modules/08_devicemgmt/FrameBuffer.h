@@ -7,8 +7,8 @@
 // 溢出策略：DropOldest（实时扫描优先最新帧）。
 // ============================================================================
 
-#include "IFrameSink.h"
-#include "RingBuffer.h"
+#include "data/IFrameSink.h"
+#include "data/RingBuffer.h"
 #include <optional>
 #include <chrono>
 

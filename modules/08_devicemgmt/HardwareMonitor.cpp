@@ -4,9 +4,9 @@
 
 #include "HardwareMonitor.h"
 #include "data/DeviceStateCache.h"
-#include "infra/EventBus.h"
-#include "hal/IMCU.h"
-#include "hal/IScannerCamera.h"
+#include "EventBus.h"
+#include "IMCU.h"
+#include "IScannerCamera.h"
 #include <spdlog/spdlog.h>
 #include <chrono>
 

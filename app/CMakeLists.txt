@@ -80,6 +80,7 @@ target_link_libraries(scan_demo PRIVATE
     fw_infra
     fw_workflow
     mod_devicemgmt
+    mod_session
     mod_operatorlib
     Qt5::Widgets
     Qt5::OpenGL

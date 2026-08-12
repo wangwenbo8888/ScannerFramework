@@ -80,9 +80,9 @@ struct ScanFrameOutput {
 // ============================================================================
 struct ScanProgress {
     int frameCount = 0;
-    int markerCount = 0;
-    int laserPointCount = 0;
-    int fusedPointCount = 0;
+    int markerCount = 0;      // 融合后标志点数（3D视图显示的）
+    int laserPointCount = 0;  // 融合后激光点数（3D视图显示的）
+    int fusedPointCount = 0;  // 兼容旧字段 = markerCount
     float fps = 0.0f;
     std::string status;
 };

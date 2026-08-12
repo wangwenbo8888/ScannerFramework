@@ -9,7 +9,7 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
-#include "hal/IMCU.h"
+#include "IMCU.h"
 
 #include <atomic>
 #include <mutex>

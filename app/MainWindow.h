@@ -128,6 +128,7 @@ protected:
     std::unique_ptr<Scanner::workflow::ScanPipeline> m_scanPipeline;
     std::thread m_scanThread;
     std::atomic<bool> m_scanning{false};
+    std::atomic<int> m_scanFps{0};  // 实时扫描帧率
     int m_scanModeIdx = -1;  // -1=未扫描, 2=标点, 3=面片, 4=点云
     void startScanWithConfig(const Scanner::workflow::ScanConfig& config, int modeIdx);
     void scanLoop();

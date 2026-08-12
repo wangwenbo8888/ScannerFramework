@@ -870,8 +870,8 @@ void MainWindow::startScanWithConfig(const Scanner::workflow::ScanConfig& config
     // 设置进度回调
     m_scanPipeline->setProgressCallback([this](const Scanner::workflow::ScanProgress& p) {
         QMetaObject::invokeMethod(this, [this, p]() {
-            statusBar()->showMessage(QStringLiteral("扫描中: %1帧 | 标记点 %2 | 融合 %3 | %4")
-                .arg(p.frameCount).arg(p.markerCount).arg(p.fusedPointCount)
+            statusBar()->showMessage(QStringLiteral("帧:%1 | 标志点:%2 | 激光点:%3 | %4")
+                .arg(p.frameCount).arg(p.markerCount).arg(p.laserPointCount)
                 .arg(QString::fromStdString(p.status)));
         });
     });
@@ -925,6 +925,8 @@ void MainWindow::scanLoop() {
     spdlog::info("[Scan] 扫描线程启动");
     auto* cam = m_appCtx ? m_appCtx->camera() : nullptr;
     int frameCount = 0;
+    int fpsCounter = 0;
+    auto fpsTimer = std::chrono::steady_clock::now();
 
     while (m_scanning && cam) {
         try {
@@ -936,25 +938,53 @@ void MainWindow::scanLoop() {
             }
 
             ++frameCount;
+            ++fpsCounter;
             auto output = m_scanPipeline->processFrame(sf.leftGray, sf.rightGray);
+
+            // 每秒更新一次 FPS
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - fpsTimer);
+            if (elapsed.count() >= 1000) {
+                int fps = static_cast<int>(fpsCounter * 1000.0 / elapsed.count());
+                m_scanFps.store(fps);
+                fpsCounter = 0;
+                fpsTimer = now;
+            }
 
             // 定期更新3D视图（每30帧）
             if (frameCount % 30 == 0 && m_3dView) {
+                // 标志点（同心圆显示）
                 const auto& markers = m_scanPipeline->getFusedMarkers();
                 if (!markers.empty()) {
-                    std::vector<osg::Vec3> pts;
-                    pts.reserve(markers.size());
+                    std::vector<osg::Vec3> mpts;
+                    mpts.reserve(markers.size());
                     for (const auto& m : markers) {
-                        pts.emplace_back(m.x, m.y, m.z);
+                        mpts.emplace_back(m.x, m.y, m.z);
                     }
-                    QMetaObject::invokeMethod(this, [this, pts]() {
-                        if (m_3dView) m_3dView->loadMarkerPoints(pts);
+                    QMetaObject::invokeMethod(this, [this, mpts]() {
+                        if (m_3dView) m_3dView->loadMarkerPoints(mpts);
+                    });
+                }
+
+                // 激光点云（体素哈希过滤后显示）
+                auto laserPts = m_scanPipeline->getFusedLaserPoints();
+                if (!laserPts.empty()) {
+                    std::vector<osg::Vec3> lpts;
+                    lpts.reserve(laserPts.size());
+                    for (const auto& p : laserPts) {
+                        lpts.emplace_back(p.x, p.y, p.z);
+                    }
+                    QMetaObject::invokeMethod(this, [this, lpts]() {
+                        if (m_3dView) m_3dView->loadPointCloud(lpts);
                     });
                 }
             }
 
             if (frameCount % 100 == 0) {
-                appendDebugLog(QStringLiteral("已处理 %1 帧").arg(frameCount));
+                const auto& markers = m_scanPipeline->getFusedMarkers();
+                auto laserPts = m_scanPipeline->getFusedLaserPoints();
+                appendDebugLog(QStringLiteral("帧:%1 标志点:%2 激光点:%3")
+                    .arg(frameCount).arg(markers.size()).arg(laserPts.size()));
             }
         } catch (const std::exception& e) {
             spdlog::error("[Scan] 帧 {} 异常: {}", frameCount, e.what());
@@ -967,19 +997,30 @@ void MainWindow::scanLoop() {
 
     spdlog::info("[Scan] 扫描线程结束 ({}帧)", frameCount);
 
-    // 最终更新点云
+    // 最终更新标志点 + 激光点云
     if (m_3dView) {
+        // 标志点
         const auto& markers = m_scanPipeline->getFusedMarkers();
         if (!markers.empty()) {
-            std::vector<osg::Vec3> pts;
-            pts.reserve(markers.size());
-            for (const auto& m : markers) {
-                pts.emplace_back(m.x, m.y, m.z);
-            }
-            QMetaObject::invokeMethod(this, [this, pts]() {
-                if (m_3dView) m_3dView->loadMarkerPoints(pts);
+            std::vector<osg::Vec3> mpts;
+            mpts.reserve(markers.size());
+            for (const auto& m : markers) mpts.emplace_back(m.x, m.y, m.z);
+            QMetaObject::invokeMethod(this, [this, mpts]() {
+                if (m_3dView) m_3dView->loadMarkerPoints(mpts);
             });
         }
+        // 激光点云
+        auto laserPts = m_scanPipeline->getFusedLaserPoints();
+        if (!laserPts.empty()) {
+            std::vector<osg::Vec3> lpts;
+            lpts.reserve(laserPts.size());
+            for (const auto& p : laserPts) lpts.emplace_back(p.x, p.y, p.z);
+            QMetaObject::invokeMethod(this, [this, lpts]() {
+                if (m_3dView) m_3dView->loadPointCloud(lpts);
+            });
+        }
+        appendDebugLog(QStringLiteral("扫描结束: 标志点 %1 个, 激光点 %2 个")
+            .arg(markers.size()).arg(laserPts.size()));
     }
 
     QMetaObject::invokeMethod(this, [this]() {
@@ -2176,17 +2217,21 @@ void MainWindow::updateInfoSection()
         m_infoPointCloudLabel->setText(QString::number(count));
     }
 
-    // 3. 帧率 — 从 DeviceStateCache 或 FrameBuffer 水位
+    // 3. 帧率 — 扫描中显示实际处理帧率
     if (m_infoFpsLabel) {
-        double fps = dsc ? dsc->getFps("Camera") : 0.0;
-        if (fps > 0.0) {
-            m_infoFpsLabel->setText(QString::number(static_cast<int>(fps)) + " fps");
-        } else if (m_appCtx && m_appCtx->frameBuffer()) {
-            // 回退: 用 FrameBuffer 水位推算
-            int level = m_appCtx->frameBuffer()->getBufferLevel();
-            m_infoFpsLabel->setText(level > 0 ? QString::number(level) + " f" : "-- fps");
+        if (m_scanning) {
+            int fps = m_scanFps.load();
+            m_infoFpsLabel->setText(fps > 0 ? QString::number(fps) + " fps" : "处理中...");
         } else {
-            m_infoFpsLabel->setText("-- fps");
+            double fps = dsc ? dsc->getFps("Camera") : 0.0;
+            if (fps > 0.0) {
+                m_infoFpsLabel->setText(QString::number(static_cast<int>(fps)) + " fps");
+            } else if (m_appCtx && m_appCtx->frameBuffer()) {
+                int level = m_appCtx->frameBuffer()->getBufferLevel();
+                m_infoFpsLabel->setText(level > 0 ? QString::number(level) + " f" : "-- fps");
+            } else {
+                m_infoFpsLabel->setText("-- fps");
+            }
         }
     }
 

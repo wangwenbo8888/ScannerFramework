@@ -1,5 +1,4 @@
 add_library(fw_data STATIC
-    FrameBuffer.cpp
     PointCloudBuffer.cpp
     DeviceStateCache.cpp
     CalibStore.cpp

@@ -7,6 +7,7 @@ add_library(mod_devicemgmt STATIC
     MCUDriver.cpp
     HardwareMonitor.cpp
     ScannerSerialPort.cpp
+    FrameBuffer.cpp
 )
 
 target_include_directories(mod_devicemgmt
@@ -24,6 +25,7 @@ target_link_libraries(mod_devicemgmt
         fw_data
         fw_infra
         fw_common
+        mod_session
         ${OpenCV_LIBS}
         spdlog::spdlog
         Qt5::SerialPort

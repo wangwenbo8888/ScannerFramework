@@ -1,13 +1,13 @@
 #include "WorkflowContext.h"
-#include "data/FrameBuffer.h"
+#include "modules/08_devicemgmt/FrameBuffer.h"
 #include "data/PointCloudBuffer.h"
 #include "data/DeviceStateCache.h"
 #include "service/StateMachine.h"
 #include "service/ParameterManager.h"
 #include "service/SessionService.h"
-#include "infra/EventBus.h"
-#include "hal/IScannerCamera.h"
-#include "hal/IMCU.h"
+#include "modules/07_session/EventBus.h"
+#include "modules/08_devicemgmt/IScannerCamera.h"
+#include "modules/08_devicemgmt/IMCU.h"
 #include <chrono>
 
 namespace Scanner::workflow {

@@ -6,7 +6,7 @@
 // ============================================================================
 
 #include "ScanWorkflow.h"
-#include "data/FrameBuffer.h"
+#include "modules/08_devicemgmt/FrameBuffer.h"
 #include "data/PointCloudBuffer.h"
 #include "service/SessionService.h"
 

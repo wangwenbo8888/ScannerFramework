@@ -5,7 +5,7 @@
 // ============================================================================
 
 #include "CalibrationWorkflow.h"
-#include "data/FrameBuffer.h"
+#include "modules/08_devicemgmt/FrameBuffer.h"
 #include "data/CalibStore.h"
 
 #include <opencv2/calib3d.hpp>

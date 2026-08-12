@@ -9,7 +9,7 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
-#include "hal/IScannerCamera.h"
+#include "IScannerCamera.h"
 #include "GalaxyIncludes.h"
 
 #include <mutex>
